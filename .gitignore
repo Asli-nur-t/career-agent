@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Career Agent: local environments and private data
+.venv/
+.env
+.env.*
+!.env.example
+data/
+private/
+*.log
+.DS_Store
