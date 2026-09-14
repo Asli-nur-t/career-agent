@@ -14,6 +14,10 @@ from app.discovery.gemini import (
 from app.discovery.safety import build_company_queries, safe_text
 from app.discovery.schemas import CompanyAssessment, SearchResult
 from app.discovery.serper import SerperClient, SerperError
+from app.discovery.web_verifier import (
+    SafeWebsiteVerifier,
+    WebsiteVerificationError,
+)
 from app.models import Company, CompanyWebProfile, DiscoveryAttempt
 
 
@@ -34,6 +38,11 @@ class DiscoveryState(TypedDict):
     assessment: NotRequired[CompanyAssessment]
     attempts: NotRequired[list[AttemptData]]
     error_code: NotRequired[str | None]
+    site_verified: NotRequired[bool]
+
+    verification_url: NotRequired[str | None]
+
+    verification_code: NotRequired[str | None]
     persisted: NotRequired[bool]
 
 
@@ -66,6 +75,7 @@ class CompanyDiscoveryGraph:
         self._engine = engine
         self._search_client = SerperClient(serper_key)
         self._evaluator = GeminiEvaluator(gemini_key)
+        self._website_verifier = SafeWebsiteVerifier()
         self._graph = self._build_graph()
 
     def __enter__(self) -> "CompanyDiscoveryGraph":
@@ -88,6 +98,7 @@ class CompanyDiscoveryGraph:
         graph.add_node("load_company", self._load_company)
         graph.add_node("search_sources", self._search_sources)
         graph.add_node("evaluate_sources", self._evaluate_sources)
+        graph.add_node("verify_candidate", self._verify_candidate)
         graph.add_node("mark_not_found", self._mark_not_found)
         graph.add_node("persist_result", self._persist_result)
 
@@ -102,7 +113,16 @@ class CompanyDiscoveryGraph:
                 "persist_failure": "persist_result",
             },
         )
-        graph.add_edge("evaluate_sources", "persist_result")
+        graph.add_conditional_edges(
+            "evaluate_sources",
+            self._route_after_evaluation,
+            {
+                "verify": "verify_candidate",
+                "persist": "persist_result",
+            },
+        )
+
+        graph.add_edge("verify_candidate", "persist_result")
         graph.add_edge("mark_not_found", "persist_result")
         graph.add_edge("persist_result", END)
 
@@ -245,6 +265,90 @@ class CompanyDiscoveryGraph:
         }
 
     @staticmethod
+    def _route_after_evaluation(
+        state: DiscoveryState,
+    ) -> str:
+        assessment = state.get("assessment")
+
+        if state.get("error_code") or assessment is None:
+            return "persist"
+
+        if (
+            assessment.status in {"candidate_found", "verified"}
+            and assessment.official_website_candidate
+        ):
+            return "verify"
+
+        return "persist"
+
+    def _verify_candidate(
+        self,
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        assessment = state.get("assessment")
+
+        if (
+            assessment is None
+            or not assessment.official_website_candidate
+        ):
+            return {
+                **state,
+                "site_verified": False,
+                "verification_url": None,
+                "verification_code": "not_applicable",
+            }
+
+        try:
+            result = self._website_verifier.verify(
+                company_name=state["company_name"],
+                official_website=(
+                    assessment.official_website_candidate
+                ),
+                search_results=state.get("search_results", []),
+            )
+        except WebsiteVerificationError as error:
+            return {
+                **state,
+                "site_verified": False,
+                "verification_url": None,
+                "verification_code": error.code,
+            }
+        except ValueError:
+            return {
+                **state,
+                "site_verified": False,
+                "verification_url": None,
+                "verification_code": "invalid_verification_input",
+            }
+
+        if result.verified and result.matched_url:
+            verification_evidence = (
+                f"{result.matched_url} sayfasında şirketin "
+                "tam ticari unvanı doğrulandı."
+            )
+
+            assessment = assessment.model_copy(
+                update={
+                    "status": "verified",
+                    "evidence": [
+                        *assessment.evidence,
+                        verification_evidence,
+                    ],
+                }
+            )
+        elif assessment.status == "verified":
+            assessment = assessment.model_copy(
+                update={"status": "candidate_found"}
+            )
+
+        return {
+            **state,
+            "assessment": assessment,
+            "site_verified": result.verified,
+            "verification_url": result.matched_url,
+            "verification_code": result.code,
+        }
+    @staticmethod
     def _mark_not_found(
         state: DiscoveryState,
     ) -> DiscoveryState:
@@ -293,6 +397,25 @@ class CompanyDiscoveryGraph:
                         for item in assessment.evidence
                     ]
 
+                    site_verified = bool(
+                        state.get("site_verified")
+                    )
+
+                    profile_status = (
+                        "verified"
+                        if site_verified
+                        else (
+                            "candidate_found"
+                            if assessment.status == "verified"
+                            else assessment.status
+                        )
+                    )
+
+                    verified_at = (
+                        func.now()
+                        if site_verified
+                        else None
+                    )
                     statement = insert(CompanyWebProfile).values(
                         company_id=state["company_id"],
                         brand_name=assessment.brand_name,
@@ -304,12 +427,12 @@ class CompanyDiscoveryGraph:
                             assessment.official_linkedin_candidate
                         ),
                         confidence=assessment.confidence,
-                        status=assessment.status,
+                        status=profile_status,
                         evidence=evidence,
                         search_provider="serper",
                         evaluator_model=self._evaluator.model,
                         last_searched_at=func.now(),
-                        last_verified_at=None,
+                        last_verified_at=verified_at,
                     )
 
                     statement = statement.on_conflict_do_update(
@@ -333,7 +456,7 @@ class CompanyDiscoveryGraph:
                                 statement.excluded.evaluator_model
                             ),
                             "last_searched_at": func.now(),
-                            "last_verified_at": None,
+                            "last_verified_at": verified_at,
                             "updated_at": func.now(),
                         },
                         where=CompanyWebProfile.status != "verified",
