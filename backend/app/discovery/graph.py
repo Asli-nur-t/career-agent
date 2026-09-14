@@ -1,0 +1,354 @@
+from typing import NotRequired, TypedDict, cast
+from uuid import UUID
+
+from langgraph.graph import END, START, StateGraph
+from sqlalchemy import Engine, func
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.discovery.gemini import (
+    GeminiEvaluationError,
+    GeminiEvaluator,
+)
+from app.discovery.safety import build_company_queries, safe_text
+from app.discovery.schemas import CompanyAssessment, SearchResult
+from app.discovery.serper import SerperClient, SerperError
+from app.models import Company, CompanyWebProfile, DiscoveryAttempt
+
+
+class AttemptData(TypedDict):
+    query: str
+    result_count: int
+    outcome: str
+    error_code: str | None
+    evaluator_model: str | None
+
+
+class DiscoveryState(TypedDict):
+    company_id: UUID
+    company_name: NotRequired[str]
+    queries: NotRequired[tuple[str, ...]]
+    active_query: NotRequired[str]
+    search_results: NotRequired[list[SearchResult]]
+    assessment: NotRequired[CompanyAssessment]
+    attempts: NotRequired[list[AttemptData]]
+    error_code: NotRequired[str | None]
+    persisted: NotRequired[bool]
+
+
+class CompanyDiscoveryError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__("Company discovery failed.")
+        self.code = code
+
+
+REJECTED_EVALUATION_CODES = {
+    "candidate_without_website",
+    "careers_without_website",
+    "company_name_mismatch",
+    "denied_official_domain",
+    "invented_url",
+    "invalid_linkedin_domain",
+    "invalid_url",
+    "not_found_with_urls",
+}
+
+
+class CompanyDiscoveryGraph:
+    def __init__(
+        self,
+        *,
+        engine: Engine,
+        serper_key: str,
+        gemini_key: str,
+    ) -> None:
+        self._engine = engine
+        self._search_client = SerperClient(serper_key)
+        self._evaluator = GeminiEvaluator(gemini_key)
+        self._graph = self._build_graph()
+
+    def __enter__(self) -> "CompanyDiscoveryGraph":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._search_client.close()
+        self._evaluator.close()
+
+    def run(self, company_id: UUID) -> DiscoveryState:
+        result = self._graph.invoke({"company_id": company_id})
+        return cast(DiscoveryState, result)
+
+    def _build_graph(self):
+        graph = StateGraph(DiscoveryState)
+
+        graph.add_node("load_company", self._load_company)
+        graph.add_node("search_sources", self._search_sources)
+        graph.add_node("evaluate_sources", self._evaluate_sources)
+        graph.add_node("mark_not_found", self._mark_not_found)
+        graph.add_node("persist_result", self._persist_result)
+
+        graph.add_edge(START, "load_company")
+        graph.add_edge("load_company", "search_sources")
+        graph.add_conditional_edges(
+            "search_sources",
+            self._route_after_search,
+            {
+                "evaluate": "evaluate_sources",
+                "not_found": "mark_not_found",
+                "persist_failure": "persist_result",
+            },
+        )
+        graph.add_edge("evaluate_sources", "persist_result")
+        graph.add_edge("mark_not_found", "persist_result")
+        graph.add_edge("persist_result", END)
+
+        return graph.compile()
+
+    def _load_company(
+        self,
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        with Session(self._engine) as session:
+            company = session.get(Company, state["company_id"])
+
+            if company is None:
+                raise CompanyDiscoveryError("company_not_found")
+
+            company_name = safe_text(company.name, 500)
+
+        if not company_name:
+            raise CompanyDiscoveryError("invalid_company_name")
+
+        try:
+            queries = build_company_queries(company_name)
+        except ValueError as error:
+            raise CompanyDiscoveryError(
+                "invalid_company_name"
+            ) from error
+
+        return {
+            **state,
+            "company_name": company_name,
+            "queries": queries,
+            "attempts": [],
+            "error_code": None,
+        }
+
+    def _search_sources(
+        self,
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        attempts = list(state.get("attempts", []))
+
+        for query in state["queries"]:
+            try:
+                results = self._search_client.search(query)
+            except SerperError as error:
+                attempts.append(
+                    AttemptData(
+                        query=query,
+                        result_count=0,
+                        outcome="search_error",
+                        error_code=error.code,
+                        evaluator_model=None,
+                    )
+                )
+                return {
+                    **state,
+                    "active_query": query,
+                    "search_results": [],
+                    "attempts": attempts,
+                    "error_code": error.code,
+                }
+
+            if results:
+                attempts.append(
+                    AttemptData(
+                        query=query,
+                        result_count=len(results),
+                        outcome="success",
+                        error_code=None,
+                        evaluator_model=self._evaluator.model,
+                    )
+                )
+                return {
+                    **state,
+                    "active_query": query,
+                    "search_results": results,
+                    "attempts": attempts,
+                    "error_code": None,
+                }
+
+            attempts.append(
+                AttemptData(
+                    query=query,
+                    result_count=0,
+                    outcome="no_results",
+                    error_code=None,
+                    evaluator_model=None,
+                )
+            )
+
+        return {
+            **state,
+            "active_query": state["queries"][-1],
+            "search_results": [],
+            "attempts": attempts,
+            "error_code": None,
+        }
+
+    @staticmethod
+    def _route_after_search(state: DiscoveryState) -> str:
+        if state.get("error_code"):
+            return "persist_failure"
+        if state.get("search_results"):
+            return "evaluate"
+        return "not_found"
+
+    def _evaluate_sources(
+        self,
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        attempts = list(state["attempts"])
+
+        try:
+            assessment = self._evaluator.evaluate(
+                state["company_name"],
+                state["search_results"],
+            )
+        except GeminiEvaluationError as error:
+            outcome = (
+                "rejected"
+                if error.code in REJECTED_EVALUATION_CODES
+                else "evaluation_error"
+            )
+            attempts[-1] = {
+                **attempts[-1],
+                "outcome": outcome,
+                "error_code": error.code,
+            }
+            return {
+                **state,
+                "attempts": attempts,
+                "error_code": error.code,
+            }
+
+        return {
+            **state,
+            "assessment": assessment,
+            "attempts": attempts,
+            "error_code": None,
+        }
+
+    @staticmethod
+    def _mark_not_found(
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        assessment = CompanyAssessment(
+            company_name=state["company_name"],
+            brand_name=None,
+            official_website_candidate=None,
+            careers_url_candidate=None,
+            official_linkedin_candidate=None,
+            confidence="low",
+            status="not_found",
+            evidence=[],
+            reason="Üç kontrollü sorguda uygun web kaynağı bulunamadı.",
+        )
+
+        return {
+            **state,
+            "assessment": assessment,
+            "error_code": None,
+        }
+
+    def _persist_result(
+        self,
+        state: DiscoveryState,
+    ) -> DiscoveryState:
+        try:
+            with Session(self._engine) as session:
+                for attempt in state.get("attempts", []):
+                    session.add(
+                        DiscoveryAttempt(
+                            company_id=state["company_id"],
+                            query=attempt["query"],
+                            search_provider="serper",
+                            evaluator_model=attempt["evaluator_model"],
+                            result_count=attempt["result_count"],
+                            outcome=attempt["outcome"],
+                            error_code=attempt["error_code"],
+                        )
+                    )
+
+                assessment = state.get("assessment")
+
+                if assessment is not None:
+                    evidence = [
+                        {"text": safe_text(item, 500)}
+                        for item in assessment.evidence
+                    ]
+
+                    statement = insert(CompanyWebProfile).values(
+                        company_id=state["company_id"],
+                        brand_name=assessment.brand_name,
+                        official_website_url=(
+                            assessment.official_website_candidate
+                        ),
+                        careers_url=assessment.careers_url_candidate,
+                        official_linkedin_url=(
+                            assessment.official_linkedin_candidate
+                        ),
+                        confidence=assessment.confidence,
+                        status=assessment.status,
+                        evidence=evidence,
+                        search_provider="serper",
+                        evaluator_model=self._evaluator.model,
+                        last_searched_at=func.now(),
+                        last_verified_at=None,
+                    )
+
+                    statement = statement.on_conflict_do_update(
+                        index_elements=[CompanyWebProfile.company_id],
+                        set_={
+                            "brand_name": statement.excluded.brand_name,
+                            "official_website_url": (
+                                statement.excluded.official_website_url
+                            ),
+                            "careers_url": statement.excluded.careers_url,
+                            "official_linkedin_url": (
+                                statement.excluded.official_linkedin_url
+                            ),
+                            "confidence": statement.excluded.confidence,
+                            "status": statement.excluded.status,
+                            "evidence": statement.excluded.evidence,
+                            "search_provider": (
+                                statement.excluded.search_provider
+                            ),
+                            "evaluator_model": (
+                                statement.excluded.evaluator_model
+                            ),
+                            "last_searched_at": func.now(),
+                            "last_verified_at": None,
+                            "updated_at": func.now(),
+                        },
+                        where=CompanyWebProfile.status != "verified",
+                    )
+
+                    session.execute(statement)
+
+                session.commit()
+
+        except SQLAlchemyError as error:
+            raise CompanyDiscoveryError(
+                "persistence_error"
+            ) from error
+
+        return {
+            **state,
+            "persisted": True,
+        }
