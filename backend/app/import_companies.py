@@ -1,5 +1,4 @@
 import csv
-import hashlib
 import io
 import json
 import unicodedata
@@ -9,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.company_names import company_name_key
 from app.database import PROJECT_ROOT, engine
 from app.models import Company, CompanyAffiliation
 
@@ -35,7 +35,7 @@ def clean_text(value: str, limit: int, required: bool = True) -> str:
 
 
 def name_key(name: str) -> str:
-    return hashlib.sha256(name.casefold().encode("utf-8")).hexdigest()
+    return company_name_key(name)
 
 
 REVIEW_KEYS = {
