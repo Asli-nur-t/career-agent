@@ -215,13 +215,20 @@ def main() -> None:
                         "status": (
                             "success" if succeeded else "error"
                         ),
-                        "profile_status": (
+                        "profile_status": result.get(
+                            "stored_status"
+                        ),
+                        "assessment_status": (
                             assessment.status
                             if isinstance(
                                 assessment,
                                 CompanyAssessment,
                             )
                             else None
+                        ),
+                        "profile_updated": result.get(
+                            "profile_updated",
+                            False,
                         ),
                         "confidence": (
                             assessment.confidence

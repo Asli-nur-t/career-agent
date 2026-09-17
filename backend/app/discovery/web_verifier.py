@@ -1,5 +1,6 @@
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import unicodedata
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+from app.company_names import canonical_company_name
 from app.discovery.safety import normalize_public_url, safe_text
 from app.discovery.schemas import SearchResult
 
@@ -100,6 +102,21 @@ def _comparison_text(value: str) -> str:
     return " ".join("".join(characters).split())
 
 
+def _legal_comparison_text(value: str) -> str:
+    normalized = _comparison_text(value)
+
+    normalized = re.sub(
+        r"\b(?:ltd|limited)\s+(?:sti|sirketi)\b",
+        "limited sirketi",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\b(?:a\s*s|anonim\s+sirketi)\b",
+        "anonim sirketi",
+        normalized,
+    )
+
+    return normalized
 def _site_key(url: str) -> str:
     hostname = (urlsplit(url).hostname or "").lower()
 
@@ -154,8 +171,8 @@ class SafeWebsiteVerifier:
         official_website: str,
         search_results: list[SearchResult],
     ) -> VerificationResult:
-        company_key = _comparison_text(
-            safe_text(company_name, 500)
+        company_key = _legal_comparison_text(
+            canonical_company_name(safe_text(company_name, 500))
         )
         official_website = normalize_public_url(official_website)
 
@@ -194,7 +211,7 @@ class SafeWebsiteVerifier:
 
             fetched_page = True
 
-            if company_key in _comparison_text(page_text):
+            if company_key in _legal_comparison_text(page_text):
                 return VerificationResult(
                     verified=True,
                     matched_url=final_url,

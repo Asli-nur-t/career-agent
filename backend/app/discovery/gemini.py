@@ -164,6 +164,7 @@ Kurallar:
 - Kariyer sayfası açıkça görünmüyorsa null döndür.
 - Kesin olmayan eşleşmeyi needs_review olarak işaretle.
 - Hiç uygun aday yoksa not_found kullan.
+- not_found kullanıyorsan confidence alanı low olmalı.
 - Sadece geçerli JSON döndür. Markdown veya açıklama ekleme.
 
 JSON şeması:
@@ -183,7 +184,7 @@ ARAMA_SONUCLARI:
             raise GeminiEvaluationError("company_name_mismatch")
 
         allowed_urls = allowed_candidate_urls(results)
-        normalized_updates: dict[str, str | None] = {}
+        normalized_updates: dict[str, object] = {}
 
         url_fields = (
             "official_website_candidate",
@@ -228,5 +229,13 @@ ARAMA_SONUCLARI:
             (website, careers, linkedin)
         ):
             raise GeminiEvaluationError("not_found_with_urls")
+        if assessment.status == "not_found":
+            normalized_updates.update(
+                {
+                    "brand_name": None,
+                    "confidence": "low",
+                    "evidence": [],
+                }
+            )
 
         return assessment.model_copy(update=normalized_updates)

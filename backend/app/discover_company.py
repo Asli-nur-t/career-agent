@@ -100,6 +100,9 @@ def main() -> None:
         "attempt_count": len(result.get("attempts", [])),
         "persisted": result.get("persisted", False),
         "error_code": result.get("error_code"),
+        "verification_code": result.get("verification_code"),
+        "stored_status": result.get("stored_status"),
+        "profile_updated": result.get("profile_updated", False),
         "assessment": (
             assessment.model_dump()
             if isinstance(assessment, CompanyAssessment)

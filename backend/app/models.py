@@ -83,6 +83,13 @@ class CompanyWebProfile(Base):
             name="ck_company_web_profiles_status",
         ),
         CheckConstraint(
+            "status <> 'not_found' OR confidence = 'low'",
+            name=(
+                "ck_company_web_profiles_"
+                "not_found_confidence"
+            ),
+        ),
+        CheckConstraint(
             "official_website_url IS NULL OR "
             "char_length(btrim(official_website_url)) > 0",
             name="ck_company_web_profiles_website_not_blank",

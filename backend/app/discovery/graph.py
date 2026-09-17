@@ -2,7 +2,7 @@ from typing import NotRequired, TypedDict, cast
 from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import Engine, func
+from sqlalchemy import Engine, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -43,6 +43,9 @@ class DiscoveryState(TypedDict):
     verification_url: NotRequired[str | None]
 
     verification_code: NotRequired[str | None]
+    stored_status: NotRequired[str | None]
+
+    profile_updated: NotRequired[bool]
     persisted: NotRequired[bool]
 
 
@@ -374,6 +377,8 @@ class CompanyDiscoveryGraph:
         self,
         state: DiscoveryState,
     ) -> DiscoveryState:
+        stored_status: str | None = None
+        profile_updated = False
         try:
             with Session(self._engine) as session:
                 for attempt in state.get("attempts", []):
@@ -462,8 +467,18 @@ class CompanyDiscoveryGraph:
                         where=CompanyWebProfile.status != "verified",
                     )
 
-                    session.execute(statement)
+                    execution_result = session.execute(statement.returning(CompanyWebProfile.status))
+                    profile_updated = (
+                        execution_result.scalar_one_or_none()
+                        is not None
+                    )
 
+                stored_status = session.scalar(
+                    select(CompanyWebProfile.status).where(
+                        CompanyWebProfile.company_id
+                        == state["company_id"]
+                    )
+                )
                 session.commit()
 
         except SQLAlchemyError as error:
@@ -473,5 +488,7 @@ class CompanyDiscoveryGraph:
 
         return {
             **state,
+            "stored_status": stored_status,
+            "profile_updated": profile_updated,
             "persisted": True,
         }
