@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     Uuid,
+    UniqueConstraint,
     false,
     func,
     text,
@@ -225,4 +226,133 @@ class DiscoveryAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+    )
+
+class CareerSource(Base):
+    __tablename__ = "career_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "source_url",
+            name="uq_career_sources_company_url",
+        ),
+        CheckConstraint(
+            "char_length(btrim(source_url)) > 0",
+            name="ck_career_sources_url_not_blank",
+        ),
+        CheckConstraint(
+            "source_type IN "
+            "('ats', 'career_page', 'jobs_page', 'manual')",
+            name="ck_career_sources_type",
+        ),
+        CheckConstraint(
+            "ats_type IS NULL OR ats_type IN "
+            "('lever', 'greenhouse', 'smartrecruiters', "
+            "'recruitee', 'workable', 'ashby', "
+            "'teamtailor', 'custom')",
+            name="ck_career_sources_ats_type",
+        ),
+        CheckConstraint(
+            "source_type <> 'ats' OR ats_type IS NOT NULL",
+            name="ck_career_sources_ats_requires_type",
+        ),
+        CheckConstraint(
+            "access_strategy IN "
+            "('public_api', 'allowed_crawl', "
+            "'browser_assisted', 'manual_import', 'blocked')",
+            name="ck_career_sources_access_strategy",
+        ),
+        CheckConstraint(
+            "status IN "
+            "('candidate', 'active', 'inactive', "
+            "'blocked', 'needs_review')",
+            name="ck_career_sources_status",
+        ),
+        CheckConstraint(
+            "consecutive_failures BETWEEN 0 AND 1000",
+            name="ck_career_sources_failure_count",
+        ),
+        CheckConstraint(
+            "last_http_status IS NULL OR "
+            "last_http_status BETWEEN 100 AND 599",
+            name="ck_career_sources_http_status",
+        ),
+        Index(
+            "ix_career_sources_status_next_check",
+            "status",
+            "next_check_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_url: Mapped[str] = mapped_column(
+        String(2048),
+        nullable=False,
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+    ats_type: Mapped[str | None] = mapped_column(
+        String(30)
+    )
+    access_strategy: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30),
+        default="candidate",
+        server_default="candidate",
+        nullable=False,
+    )
+    discovered_from_url: Mapped[str | None] = mapped_column(
+        String(2048)
+    )
+    evidence: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    last_http_status: Mapped[int | None] = mapped_column(
+        Integer
+    )
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    last_error_code: Mapped[str | None] = mapped_column(
+        String(80)
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
