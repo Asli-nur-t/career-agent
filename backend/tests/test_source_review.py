@@ -18,7 +18,11 @@ class CareerSourceReviewTests(unittest.TestCase):
             ats_type="lever",
             access_strategy="public_api",
             status="needs_review",
-            evidence=[{"text": "Verified company site links to this board."}],
+            evidence=[{
+                "kind": "verified_site_link",
+                "text": "Verified company site links to this board.",
+                "source_url": "https://acme.example/careers",
+            }],
             last_error_code="timeout",
         )
         profile = SimpleNamespace(status="verified")
@@ -72,6 +76,26 @@ class CareerSourceReviewTests(unittest.TestCase):
         self.assertIsNone(source.next_check_at)
         self.assertEqual(session.get.call_count, 1)
         session.commit.assert_called_once()
+
+    def test_approve_rejects_legacy_unstructured_evidence(self) -> None:
+        source_id = uuid4()
+        source = SimpleNamespace(
+            id=source_id,
+            company_id=uuid4(),
+            source_url="https://jobs.lever.co/acme",
+            source_type="ats",
+            ats_type="lever",
+            access_strategy="public_api",
+            status="needs_review",
+            evidence=[{"text": "Search query happened to contain Acme."}],
+        )
+        profile = SimpleNamespace(status="verified")
+        with patch("app.review_career_source.Session") as session_class:
+            session = session_class.return_value.__enter__.return_value
+            session.get.side_effect = [source, profile]
+            with self.assertRaisesRegex(ValueError, "source_data_mismatch"):
+                review_source(object(), source_id=source_id, approve=True)
+        session.commit.assert_not_called()
 
 
 if __name__ == "__main__":

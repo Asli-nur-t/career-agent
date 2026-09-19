@@ -65,7 +65,7 @@ class CareerSourceDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(sources, [])
 
-    def test_search_fallback_requires_company_evidence_for_external_ats(self) -> None:
+    def test_search_fallback_requires_matching_slug_for_external_ats(self) -> None:
         company = VerifiedCompany(
             uuid4(),
             "ACME TEKNOLOJİ A.Ş.",
@@ -100,6 +100,45 @@ class CareerSourceDiscoveryTests(unittest.TestCase):
             {"https://jobs.lever.co/acme", "https://acme.com/careers/software"},
         )
         self.assertIn('"Acme"', build_search_queries(company)[0])
+
+    def test_common_brand_phrase_does_not_claim_unrelated_ats(self) -> None:
+        company = VerifiedCompany(
+            uuid4(),
+            "ABACO GROUP LOJİSTİK A.Ş.",
+            "Ship to More",
+            "https://shiptomore.com/",
+            None,
+        )
+        result = SearchResult(
+            title="Software Engineer - Platform",
+            url="https://jobs.ashbyhq.com/vocca/job-123",
+            snippet="Help us ship to more customers across Europe.",
+            position=1,
+        )
+        sources = candidates_from_search(
+            company,
+            '"Ship to More" site:jobs.ashbyhq.com',
+            [result],
+        )
+        self.assertEqual(sources, [])
+
+    def test_external_ats_slug_can_match_compact_brand(self) -> None:
+        company = VerifiedCompany(
+            uuid4(),
+            "ABACO GROUP LOJİSTİK A.Ş.",
+            "Ship to More",
+            "https://shiptomore.com/",
+            None,
+        )
+        result = SearchResult(
+            title="Operations Specialist",
+            url="https://jobs.ashbyhq.com/ship-to-more/job-123",
+            snippet="Open position",
+            position=1,
+        )
+        sources = candidates_from_search(company, "careers", [result])
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].evidence_kind, "ats_slug_match")
 
     def test_cross_site_redirect_is_rejected_before_second_request(self) -> None:
         verifier = FakeVerifier(

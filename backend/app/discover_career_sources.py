@@ -45,6 +45,7 @@ class VerifiedCompany:
 class SourceWithProvenance:
     candidate: SourceCandidate
     discovered_from_url: str | None
+    evidence_kind: str
     note: str
 
 
@@ -96,12 +97,23 @@ def _company_aliases(company: VerifiedCompany) -> tuple[str, ...]:
     return tuple(aliases)
 
 
-def _result_mentions_company(
+def _ats_slug_matches_company(
     company: VerifiedCompany,
-    result: SearchResult,
+    source_url: str,
 ) -> bool:
-    haystack = _comparison_text(f"{result.title} {result.snippet}")
-    return any(alias in haystack for alias in _company_aliases(company))
+    slug = urlsplit(source_url).path.strip("/").split("/", 1)[0]
+    compact_slug = "".join(
+        character
+        for character in _comparison_text(slug)
+        if character.isalnum()
+    )
+    if not compact_slug:
+        return False
+    identities = {
+        "".join(character for character in alias if character.isalnum())
+        for alias in _company_aliases(company)
+    }
+    return compact_slug in identities
 
 
 def build_search_queries(company: VerifiedCompany) -> tuple[str, str]:
@@ -125,7 +137,7 @@ def candidates_from_search(
     query: str,
     results: list[SearchResult],
 ) -> list[SourceWithProvenance]:
-    """Accept same-site pages or ATS results that explicitly name the company."""
+    """Accept same-site pages or ATS boards whose slug matches the company."""
     found: dict[str, SourceWithProvenance] = {}
     for result in results:
         try:
@@ -134,20 +146,28 @@ def candidates_from_search(
             continue
         if candidate is None:
             continue
-        if not _same_site(candidate.source_url, company.website) and not (
+        same_site = _same_site(candidate.source_url, company.website)
+        ats_slug_match = (
             candidate.source_type == "ats"
-            and _result_mentions_company(company, result)
-        ):
+            and _ats_slug_matches_company(company, candidate.source_url)
+        )
+        if not same_site and not ats_slug_match:
             continue
+        if same_site:
+            evidence_kind = "same_site_search"
+            note = "Arama sonucu doğrulanmış şirket alan adındadır."
+        else:
+            evidence_kind = "ats_slug_match"
+            note = "ATS pano anahtarı şirket veya marka kimliğiyle eşleşti."
         note = safe_text(
-            f"Serper sonucu: {result.title} | Sorgu: {query}",
-            500,
+            f"{note} Sonuç: {result.title} | Sorgu: {query}", 500
         )
         found.setdefault(
             candidate.source_url,
             SourceWithProvenance(
                 candidate=candidate,
                 discovered_from_url=_without_query(result.url),
+                evidence_kind=evidence_kind,
                 note=note,
             ),
         )
@@ -197,6 +217,7 @@ def candidates_from_page(
             SourceWithProvenance(
                 candidate=candidate,
                 discovered_from_url=origin,
+                evidence_kind="verified_site_link",
                 note="Bağlantı doğrulanmış şirket sitesinin ana sayfasında bulundu.",
             ),
         )
@@ -220,6 +241,7 @@ def candidates_from_page(
                 SourceWithProvenance(
                     candidate=profile_candidate,
                     discovered_from_url=_without_query(website),
+                    evidence_kind="verified_profile_career_url",
                     note="Önceki keşifte bulunan kariyer adresi şirket alan adındadır.",
                 ),
             )
@@ -294,7 +316,11 @@ def save_candidates(
                 access_strategy=candidate.access_strategy,
                 status="needs_review",
                 discovered_from_url=source.discovered_from_url,
-                evidence=[{"text": source.note}],
+                evidence=[{
+                    "kind": source.evidence_kind,
+                    "text": source.note,
+                    "source_url": source.discovered_from_url or "",
+                }],
             )
             statement = statement.on_conflict_do_nothing(
                 constraint="uq_career_sources_company_url"

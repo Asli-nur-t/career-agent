@@ -11,12 +11,21 @@ from app.career_sources import classify_career_source
 from app.models import CareerSource, CompanyWebProfile
 
 
+ALLOWED_EVIDENCE_KINDS = {
+    "ats_slug_match",
+    "same_site_search",
+    "verified_profile_career_url",
+    "verified_site_link",
+}
+
+
 def _has_reviewable_evidence(value: object) -> bool:
     return (
         isinstance(value, list)
         and bool(value)
         and all(
             isinstance(item, dict)
+            and item.get("kind") in ALLOWED_EVIDENCE_KINDS
             and isinstance(item.get("text"), str)
             and bool(item["text"].strip())
             for item in value
