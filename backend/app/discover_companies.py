@@ -2,20 +2,22 @@ import argparse
 import json
 import os
 import time
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from app.database import engine
 from app.discovery.graph import (
     CompanyDiscoveryError,
     CompanyDiscoveryGraph,
 )
+from app.discovery_schedule import RETRYABLE_OUTCOMES, retry_due
 from app.discovery.schemas import CompanyAssessment
-from app.models import Company, CompanyWebProfile
+from app.models import Company, CompanyWebProfile, DiscoveryAttempt
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -92,8 +94,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def choose_companies(limit: int) -> list[tuple[UUID, str]]:
-    with Session(engine) as session:
+def choose_companies(
+    limit: int,
+    *,
+    database: Engine,
+    now: datetime | None = None,
+) -> list[tuple[UUID, str]]:
+    now = now or datetime.now(timezone.utc)
+    with Session(database) as session:
         rows = session.execute(
             select(Company.id, Company.name)
             .outerjoin(
@@ -102,13 +110,36 @@ def choose_companies(limit: int) -> list[tuple[UUID, str]]:
             )
             .where(CompanyWebProfile.company_id.is_(None))
             .order_by(Company.name, Company.id)
-            .limit(limit)
         ).all()
 
-    return [
-        (company_id, company_name)
-        for company_id, company_name in rows
-    ]
+        if not rows:
+            return []
+
+        company_ids = [company_id for company_id, _ in rows]
+        attempt_rows = session.execute(
+            select(
+                DiscoveryAttempt.company_id,
+                DiscoveryAttempt.outcome,
+                DiscoveryAttempt.created_at,
+            ).where(
+                DiscoveryAttempt.company_id.in_(company_ids),
+                DiscoveryAttempt.outcome.in_(RETRYABLE_OUTCOMES),
+            )
+        ).all()
+
+    attempts_by_company: dict[
+        UUID, list[tuple[str, datetime]]
+    ] = defaultdict(list)
+    for company_id, outcome, created_at in attempt_rows:
+        attempts_by_company[company_id].append((outcome, created_at))
+
+    selected: list[tuple[UUID, str]] = []
+    for company_id, company_name in rows:
+        if retry_due(attempts_by_company[company_id], now):
+            selected.append((company_id, company_name))
+            if len(selected) == limit:
+                break
+    return selected
 
 
 def print_json(payload: object) -> None:
@@ -117,7 +148,9 @@ def print_json(payload: object) -> None:
 
 def main() -> None:
     args = parse_args()
-    companies = choose_companies(args.limit)
+    from app.database import engine
+
+    companies = choose_companies(args.limit, database=engine)
 
     if args.dry_run:
         print_json(

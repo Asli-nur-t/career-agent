@@ -24,6 +24,11 @@ gün sonra yeniden kontrol edilir. Geçici hatalar bir saatten başlayıp en faz
 yirmi dört saate çıkan geri çekilme süresiyle tekrar denenir. Böylece toplu
 çalıştırmalar aynı şirketler için gereksiz arama kotası tüketmez.
 
+Şirket web profili keşfindeki geçici arama ve model hataları da mevcut deneme
+kayıtlarından hesaplanan 1, 2, 4, 8, 16 ve en fazla 24 saatlik geri çekilme
+süresiyle yeniden denenir. Güvenlik doğrulamasından reddedilen çıktılar için
+bekleme süresi yedi gündür.
+
 ## Kaynak onayı ve ilan senkronizasyonu
 
 Bir kaynağın kanıtını veritabanından kontrol ettikten sonra kaynağı açıkça
