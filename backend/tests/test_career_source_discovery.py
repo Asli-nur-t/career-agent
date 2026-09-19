@@ -5,9 +5,12 @@ from uuid import uuid4
 
 from app.discover_career_sources import (
     VerifiedCompany,
+    build_search_queries,
     candidates_from_page,
+    candidates_from_search,
     save_candidates,
 )
+from app.discovery.schemas import SearchResult
 from app.discovery.web_verifier import (
     SafeWebsiteVerifier,
     WebsiteVerificationError,
@@ -62,6 +65,42 @@ class CareerSourceDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(sources, [])
 
+    def test_search_fallback_requires_company_evidence_for_external_ats(self) -> None:
+        company = VerifiedCompany(
+            uuid4(),
+            "ACME TEKNOLOJİ A.Ş.",
+            "Acme",
+            "https://acme.com/",
+            None,
+        )
+        results = [
+            SearchResult(
+                title="Acme Careers",
+                url="https://jobs.lever.co/acme/job-123",
+                snippet="Open roles at Acme",
+                position=1,
+            ),
+            SearchResult(
+                title="Another Company Careers",
+                url="https://jobs.ashbyhq.com/another",
+                snippet="Unrelated jobs",
+                position=2,
+            ),
+            SearchResult(
+                title="Software roles",
+                url="https://acme.com/careers/software",
+                snippet="Join the team",
+                position=3,
+            ),
+        ]
+        sources = candidates_from_search(company, '"Acme" careers', results)
+        urls = {item.candidate.source_url for item in sources}
+        self.assertEqual(
+            urls,
+            {"https://jobs.lever.co/acme", "https://acme.com/careers/software"},
+        )
+        self.assertIn('"Acme"', build_search_queries(company)[0])
+
     def test_cross_site_redirect_is_rejected_before_second_request(self) -> None:
         verifier = FakeVerifier(
             _FetchResponse(
@@ -84,7 +123,9 @@ class CareerSourceDiscoveryTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "redirect_rejected")
 
     def test_changed_profile_aborts_before_insert(self) -> None:
-        company = VerifiedCompany(uuid4(), "ACME", "https://acme.com/", None)
+        company = VerifiedCompany(
+            uuid4(), "ACME", "Acme", "https://acme.com/", None
+        )
         source = candidates_from_page(
             company.website,
             company.website,

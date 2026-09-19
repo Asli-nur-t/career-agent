@@ -11,9 +11,10 @@ PYTHONPATH=backend python -m app.discover_career_sources --limit 1
 ```
 
 Belirli bir doğrulanmış şirketi tekrar taramak için `--company-id UUID` kullanın.
-Bu komut yalnızca şirketin doğrulanmış sitesinin ana sayfasını okur; şirket
-sitesinde doğrudan bağlı olan ATS adreslerini ve aynı alan adındaki kariyer
-sayfalarını `needs_review` durumunda kaydeder. Veritabanındaki mevcut kaynak
-kayıtlarını ve onay durumlarını değiştirmez. `public_api` erişim stratejisi
-yalnızca ATS biçimini belirtir; kaynak şirketle ilişkilendirilip onaylanmadan
+Komut önce şirketin doğrulanmış ana sayfasını okur. Kaynak bulamazsa ayarlı
+`SERPER_API_KEY` ile iki sınırlı arama yapar. Aynı alan adındaki kariyer
+sayfaları aday kabul edilir. Dış ATS sonucu ise yalnızca arama başlığı veya
+özetinde doğrulanmış şirket ya da marka adı geçiyorsa aday olur. Yeni kaynaklar
+`needs_review` durumunda kaydedilir; mevcut kayıtlar ve inceleme kararları
+değiştirilmez. `public_api` yalnızca ATS biçimini belirtir. Kaynak onaylanmadan
 otomatik ilan kontrolü yapılmamalıdır.

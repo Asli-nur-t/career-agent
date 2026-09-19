@@ -5,7 +5,9 @@ Run with PYTHONPATH=backend python -m app.discover_career_sources --dry-run.
 
 import argparse
 import json
+import os
 import time
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
@@ -16,6 +18,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.career_sources import SourceCandidate, classify_career_source
+from app.discovery.safety import clean_company_name, safe_text
+from app.discovery.schemas import SearchResult
+from app.discovery.serper import SerperClient, SerperError
 from app.discovery.web_verifier import (
     SafeWebsiteVerifier,
     WebsiteVerificationError,
@@ -31,6 +36,7 @@ MAX_SOURCES_PER_COMPANY = 10
 class VerifiedCompany:
     company_id: UUID
     name: str
+    brand_name: str | None
     website: str
     careers_url: str | None
 
@@ -58,6 +64,115 @@ def _same_site(url: str, website: str) -> bool:
 def _without_query(url: str) -> str:
     parsed = urlsplit(url)
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _comparison_text(value: str) -> str:
+    value = value.replace("ı", "i").replace("İ", "I")
+    value = unicodedata.normalize("NFKD", value).casefold()
+    return " ".join(
+        "".join(
+            character if character.isalnum() else " "
+            for character in value
+            if not unicodedata.combining(character)
+        ).split()
+    )
+
+
+def _company_aliases(company: VerifiedCompany) -> tuple[str, ...]:
+    aliases: list[str] = []
+    values = [company.brand_name, company.name]
+    try:
+        values.append(clean_company_name(company.name))
+    except ValueError:
+        pass
+    for value in values:
+        normalized = _comparison_text(value or "")
+        if (
+            len(normalized) >= 4
+            and not normalized.isdecimal()
+            and normalized not in aliases
+        ):
+            aliases.append(normalized)
+    return tuple(aliases)
+
+
+def _result_mentions_company(
+    company: VerifiedCompany,
+    result: SearchResult,
+) -> bool:
+    haystack = _comparison_text(f"{result.title} {result.snippet}")
+    return any(alias in haystack for alias in _company_aliases(company))
+
+
+def build_search_queries(company: VerifiedCompany) -> tuple[str, str]:
+    search_name = safe_text(
+        company.brand_name or clean_company_name(company.name),
+        200,
+    )
+    return (
+        f'"{search_name}" kariyer careers jobs',
+        (
+            f'"{search_name}" '
+            "(site:jobs.lever.co OR site:jobs.eu.lever.co OR "
+            "site:boards.greenhouse.io OR "
+            "site:job-boards.greenhouse.io OR site:jobs.ashbyhq.com)"
+        ),
+    )
+
+
+def candidates_from_search(
+    company: VerifiedCompany,
+    query: str,
+    results: list[SearchResult],
+) -> list[SourceWithProvenance]:
+    """Accept same-site pages or ATS results that explicitly name the company."""
+    found: dict[str, SourceWithProvenance] = {}
+    for result in results:
+        try:
+            candidate = classify_career_source(result.url)
+        except ValueError:
+            continue
+        if candidate is None:
+            continue
+        if not _same_site(candidate.source_url, company.website) and not (
+            candidate.source_type == "ats"
+            and _result_mentions_company(company, result)
+        ):
+            continue
+        note = safe_text(
+            f"Serper sonucu: {result.title} | Sorgu: {query}",
+            500,
+        )
+        found.setdefault(
+            candidate.source_url,
+            SourceWithProvenance(
+                candidate=candidate,
+                discovered_from_url=_without_query(result.url),
+                note=note,
+            ),
+        )
+        if len(found) >= MAX_SOURCES_PER_COMPANY:
+            break
+    return list(found.values())
+
+
+def search_candidates(
+    client: SerperClient,
+    company: VerifiedCompany,
+) -> tuple[list[SourceWithProvenance], tuple[str, ...]]:
+    found: dict[str, SourceWithProvenance] = {}
+    errors: list[str] = []
+    for query in build_search_queries(company):
+        try:
+            results = client.search(query)
+        except SerperError as error:
+            errors.append(error.code)
+            continue
+        for source in candidates_from_search(company, query, results):
+            found.setdefault(source.candidate.source_url, source)
+        if len(found) >= MAX_SOURCES_PER_COMPANY:
+            break
+    return list(found.values()), tuple(errors)
 
 
 def candidates_from_page(
@@ -123,6 +238,7 @@ def select_companies(
             select(
                 Company.id,
                 Company.name,
+                CompanyWebProfile.brand_name,
                 CompanyWebProfile.official_website_url,
                 CompanyWebProfile.careers_url,
             )
@@ -147,8 +263,8 @@ def select_companies(
         ).all()
 
     return [
-        VerifiedCompany(id_, name, website, careers_url)
-        for id_, name, website, careers_url in rows
+        VerifiedCompany(id_, name, brand_name, website, careers_url)
+        for id_, name, brand_name, website, careers_url in rows
     ]
 
 
@@ -238,33 +354,82 @@ def main() -> None:
     if args.company_id is not None and not companies:
         raise SystemExit("Şirket için doğrulanmış web profili bulunamadı.")
 
+    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not serper_key:
+        raise SystemExit("SERPER_API_KEY yapılandırılmamış.")
+
     verifier = SafeWebsiteVerifier()
-    for index, company in enumerate(companies):
-        try:
-            page_url, links = verifier.find_page_links(company.website)
-            sources = candidates_from_page(
-                company.website, page_url, links, company.careers_url
-            )
-            created = save_candidates(engine, company, sources)
-        except (WebsiteVerificationError, ValueError) as error:
-            code = (
-                error.code
-                if isinstance(error, WebsiteVerificationError)
-                else "invalid_or_changed_profile"
-            )
-            result = {"status": "error", "error_code": code}
-        except SQLAlchemyError:
-            result = {"status": "error", "error_code": "persistence_error"}
-        else:
-            result = {
-                "status": "completed",
-                "candidate_count": len(sources),
-                "new_sources": created,
-            }
-        result["company_id"] = str(company.company_id)
-        print(json.dumps(result, ensure_ascii=False))
-        if index + 1 < len(companies):
-            time.sleep(args.delay_seconds)
+    failure_count = 0
+    source_count = 0
+    with SerperClient(serper_key) as search_client:
+        for index, company in enumerate(companies):
+            page_error: str | None = None
+            search_errors: tuple[str, ...] = ()
+            fallback_used = False
+            try:
+                try:
+                    page_url, links = verifier.find_page_links(company.website)
+                except WebsiteVerificationError as error:
+                    page_error = error.code
+                    sources = []
+                else:
+                    sources = candidates_from_page(
+                        company.website,
+                        page_url,
+                        links,
+                        company.careers_url,
+                    )
+
+                if not sources:
+                    fallback_used = True
+                    sources, search_errors = search_candidates(
+                        search_client,
+                        company,
+                    )
+
+                if (
+                    not sources
+                    and page_error
+                    and len(search_errors) == 2
+                ):
+                    raise ValueError("all_discovery_methods_failed")
+
+                created = save_candidates(engine, company, sources)
+            except ValueError:
+                result = {
+                    "status": "error",
+                    "error_code": "invalid_or_changed_profile",
+                }
+            except SQLAlchemyError:
+                result = {
+                    "status": "error",
+                    "error_code": "persistence_error",
+                }
+            else:
+                source_count += created
+                result = {
+                    "status": "completed",
+                    "candidate_count": len(sources),
+                    "new_sources": created,
+                    "fallback_used": fallback_used,
+                    "page_error": page_error,
+                    "search_errors": list(search_errors),
+                }
+            if result["status"] == "error":
+                failure_count += 1
+            result["company_id"] = str(company.company_id)
+            print(json.dumps(result, ensure_ascii=False))
+            if index + 1 < len(companies):
+                time.sleep(args.delay_seconds)
+
+    print(json.dumps({
+        "status": "completed" if failure_count == 0 else "completed_with_errors",
+        "selected_count": len(companies),
+        "new_sources": source_count,
+        "failure_count": failure_count,
+    }, ensure_ascii=False))
+    if failure_count:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
