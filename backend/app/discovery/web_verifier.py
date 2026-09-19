@@ -87,6 +87,25 @@ class _VisibleTextParser(HTMLParser):
         return " ".join(self._parts)
 
 
+class _AnchorParser(HTMLParser):
+    def __init__(self, *, max_anchors: int = 200) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[str] = []
+        self._max_anchors = max_anchors
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.lower() != "a" or len(self.links) >= self._max_anchors:
+            return
+        for name, value in attrs:
+            if name.lower() == "href" and value and len(value) <= 2048:
+                self.links.append(value)
+                break
+
+
 def _comparison_text(value: str) -> str:
     value = value.replace("ı", "i").replace("İ", "I")
     value = unicodedata.normalize("NFKD", value).casefold()
@@ -117,6 +136,8 @@ def _legal_comparison_text(value: str) -> str:
     )
 
     return normalized
+
+
 def _site_key(url: str) -> str:
     hostname = (urlsplit(url).hostname or "").lower()
 
@@ -228,7 +249,56 @@ class SafeWebsiteVerifier:
             ),
         )
 
+    def find_page_links(
+        self,
+        official_website: str,
+        *,
+        max_links: int = 200,
+    ) -> tuple[str, tuple[str, ...]]:
+        """Extract untrusted links from a verified company's landing page.
+
+        The caller must confirm the company profile is verified before use.
+        """
+        if not 1 <= max_links <= 200:
+            raise ValueError("Link limit is invalid.")
+        final_url, media_type, body = self._fetch_document(official_website)
+        if media_type not in {"text/html", "application/xhtml+xml"}:
+            return final_url, ()
+
+        parser = _AnchorParser()
+        try:
+            parser.feed(body)
+            parser.close()
+        except Exception as error:
+            raise WebsiteVerificationError("invalid_html") from error
+
+        links: list[str] = []
+        for href in parser.links:
+            try:
+                link = urljoin(final_url, href)
+            except ValueError:
+                continue
+            if len(link) <= 2048 and link not in links:
+                links.append(link)
+            if len(links) >= max_links:
+                break
+        return final_url, tuple(links)
+
     def _fetch_text(self, initial_url: str) -> tuple[str, str]:
+        current_url, media_type, decoded = self._fetch_document(initial_url)
+        if media_type == "text/plain":
+            return current_url, safe_text(decoded, 1_000_000)
+
+        parser = _VisibleTextParser()
+        try:
+            parser.feed(decoded)
+            parser.close()
+        except Exception as error:
+            raise WebsiteVerificationError("invalid_html") from error
+
+        return current_url, safe_text(parser.text(), 1_000_000)
+
+    def _fetch_document(self, initial_url: str) -> tuple[str, str, str]:
         initial_url = normalize_public_url(initial_url)
         original_site = _site_key(initial_url)
         current_url = initial_url
@@ -245,9 +315,14 @@ class SafeWebsiteVerifier:
                         "redirect_rejected"
                     )
 
-                next_url = normalize_public_url(
-                    urljoin(current_url, response.location)
-                )
+                try:
+                    next_url = normalize_public_url(
+                        urljoin(current_url, response.location)
+                    )
+                except ValueError as error:
+                    raise WebsiteVerificationError(
+                        "redirect_rejected"
+                    ) from error
 
                 if (
                     urlsplit(next_url).scheme != "https"
@@ -281,23 +356,7 @@ class SafeWebsiteVerifier:
                     errors="replace",
                 )
 
-            if media_type == "text/plain":
-                return current_url, safe_text(decoded, 1_000_000)
-
-            parser = _VisibleTextParser()
-
-            try:
-                parser.feed(decoded)
-                parser.close()
-            except Exception as error:
-                raise WebsiteVerificationError(
-                    "invalid_html"
-                ) from error
-
-            return current_url, safe_text(
-                parser.text(),
-                1_000_000,
-            )
+            return current_url, media_type, decoded
 
         raise WebsiteVerificationError("redirect_rejected")
 
