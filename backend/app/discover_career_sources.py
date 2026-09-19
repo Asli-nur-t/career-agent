@@ -9,10 +9,11 @@ import os
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
-from sqlalchemy import Engine, exists, select
+from sqlalchemy import Engine, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -30,6 +31,12 @@ from app.models import CareerSource, Company, CompanyWebProfile
 
 MAX_COMPANIES = 10
 MAX_SOURCES_PER_COMPANY = 10
+
+
+class CareerSourceScanError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__("Career source scan failed.")
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -274,10 +281,10 @@ def select_companies(
             statement = statement.where(Company.id == company_id)
         else:
             statement = statement.where(
-                ~exists(
-                    select(CareerSource.id).where(
-                        CareerSource.company_id == Company.id
-                    )
+                or_(
+                    CompanyWebProfile.career_sources_next_check_at.is_(None),
+                    CompanyWebProfile.career_sources_next_check_at
+                    <= datetime.now(timezone.utc),
                 )
             )
         rows = session.execute(
@@ -294,8 +301,11 @@ def save_candidates(
     database: Engine,
     company: VerifiedCompany,
     sources: list[SourceWithProvenance],
+    *,
+    scan_error_code: str | None = None,
 ) -> int:
     """Insert only new candidates; preserve reviewed and active records."""
+    now = datetime.now(timezone.utc)
     with Session(database) as session:
         profile = session.get(CompanyWebProfile, company.company_id)
         if (
@@ -327,8 +337,49 @@ def save_candidates(
             ).returning(CareerSource.id)
             if session.scalar(statement) is not None:
                 created += 1
+        profile.career_sources_last_checked_at = now
+        profile.career_sources_candidate_count = len(sources)
+        profile.career_sources_consecutive_failures = 0
+        profile.career_sources_last_error_code = scan_error_code
+        if sources:
+            profile.career_sources_last_outcome = "candidates_found"
+            profile.career_sources_next_check_at = now + timedelta(days=30)
+        else:
+            profile.career_sources_last_outcome = "no_results"
+            profile.career_sources_next_check_at = now + timedelta(
+                days=1 if scan_error_code else 7
+            )
         session.commit()
     return created
+
+
+def record_scan_failure(
+    database: Engine,
+    company: VerifiedCompany,
+    error_code: str,
+) -> None:
+    now = datetime.now(timezone.utc)
+    with Session(database) as session:
+        profile = session.get(CompanyWebProfile, company.company_id)
+        if (
+            profile is None
+            or profile.status != "verified"
+            or profile.official_website_url != company.website
+        ):
+            return
+        failures = min(
+            profile.career_sources_consecutive_failures + 1,
+            1_000,
+        )
+        profile.career_sources_last_checked_at = now
+        profile.career_sources_next_check_at = now + timedelta(
+            hours=min(2 ** min(failures - 1, 5), 24)
+        )
+        profile.career_sources_last_outcome = "error"
+        profile.career_sources_last_error_code = error_code[:80]
+        profile.career_sources_consecutive_failures = failures
+        profile.career_sources_candidate_count = 0
+        session.commit()
 
 
 def _limit(value: str) -> int:
@@ -418,9 +469,30 @@ def main() -> None:
                     and page_error
                     and len(search_errors) == 2
                 ):
-                    raise ValueError("all_discovery_methods_failed")
+                    raise CareerSourceScanError(
+                        "all_discovery_methods_failed"
+                    )
 
-                created = save_candidates(engine, company, sources)
+                partial_error = (
+                    search_errors[0]
+                    if search_errors
+                    else page_error
+                )
+                created = save_candidates(
+                    engine,
+                    company,
+                    sources,
+                    scan_error_code=partial_error,
+                )
+            except CareerSourceScanError as error:
+                try:
+                    record_scan_failure(engine, company, error.code)
+                except SQLAlchemyError:
+                    pass
+                result = {
+                    "status": "error",
+                    "error_code": error.code,
+                }
             except ValueError:
                 result = {
                     "status": "error",

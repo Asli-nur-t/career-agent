@@ -8,6 +8,7 @@ from app.discover_career_sources import (
     build_search_queries,
     candidates_from_page,
     candidates_from_search,
+    record_scan_failure,
     save_candidates,
 )
 from app.discovery.schemas import SearchResult
@@ -181,6 +182,54 @@ class CareerSourceDiscoveryTests(unittest.TestCase):
                 save_candidates(object(), company, source)
             session.scalar.assert_not_called()
             session.commit.assert_not_called()
+
+    def test_empty_successful_scan_is_scheduled_once(self) -> None:
+        company = VerifiedCompany(
+            uuid4(), "ACME", "Acme", "https://acme.com/", None
+        )
+        profile = SimpleNamespace(
+            status="verified",
+            official_website_url=company.website,
+        )
+        with patch("app.discover_career_sources.Session") as session_class:
+            session = session_class.return_value.__enter__.return_value
+            session.get.return_value = profile
+            created = save_candidates(object(), company, [])
+        self.assertEqual(created, 0)
+        self.assertEqual(profile.career_sources_last_outcome, "no_results")
+        self.assertEqual(profile.career_sources_candidate_count, 0)
+        self.assertEqual(profile.career_sources_consecutive_failures, 0)
+        self.assertGreater(
+            profile.career_sources_next_check_at,
+            profile.career_sources_last_checked_at,
+        )
+        session.scalar.assert_not_called()
+        session.commit.assert_called_once()
+
+    def test_failed_scan_uses_bounded_backoff(self) -> None:
+        company = VerifiedCompany(
+            uuid4(), "ACME", "Acme", "https://acme.com/", None
+        )
+        profile = SimpleNamespace(
+            status="verified",
+            official_website_url=company.website,
+            career_sources_consecutive_failures=1,
+        )
+        with patch("app.discover_career_sources.Session") as session_class:
+            session = session_class.return_value.__enter__.return_value
+            session.get.return_value = profile
+            record_scan_failure(object(), company, "search_error")
+        self.assertEqual(profile.career_sources_consecutive_failures, 2)
+        self.assertEqual(profile.career_sources_last_outcome, "error")
+        self.assertEqual(profile.career_sources_last_error_code, "search_error")
+        self.assertEqual(
+            (
+                profile.career_sources_next_check_at
+                - profile.career_sources_last_checked_at
+            ).total_seconds(),
+            2 * 60 * 60,
+        )
+        session.commit.assert_called_once()
 
 
 if __name__ == "__main__":

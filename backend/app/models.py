@@ -122,6 +122,25 @@ class CompanyWebProfile(Base):
             "AND official_linkedin_url IS NULL)",
             name="ck_company_web_profiles_not_found_has_no_urls",
         ),
+        CheckConstraint(
+            "career_sources_last_outcome IS NULL OR "
+            "career_sources_last_outcome IN "
+            "('candidates_found', 'no_results', 'error')",
+            name="ck_company_web_profiles_career_scan_outcome",
+        ),
+        CheckConstraint(
+            "career_sources_consecutive_failures BETWEEN 0 AND 1000",
+            name="ck_company_web_profiles_career_failure_count",
+        ),
+        CheckConstraint(
+            "career_sources_candidate_count BETWEEN 0 AND 100",
+            name="ck_company_web_profiles_career_candidate_count",
+        ),
+        Index(
+            "ix_company_web_profiles_career_scan_due",
+            "status",
+            "career_sources_next_check_at",
+        ),
     )
 
     company_id: Mapped[UUID] = mapped_column(
@@ -164,6 +183,30 @@ class CompanyWebProfile(Base):
     )
     last_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
+    )
+    career_sources_last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    career_sources_next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    career_sources_last_outcome: Mapped[str | None] = mapped_column(
+        String(30)
+    )
+    career_sources_last_error_code: Mapped[str | None] = mapped_column(
+        String(80)
+    )
+    career_sources_consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    career_sources_candidate_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

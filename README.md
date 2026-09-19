@@ -19,6 +19,11 @@ doğrulanmış şirket veya marka kimliğiyle eşleşiyorsa aday olur. Yeni kayn
 değiştirilmez. `public_api` yalnızca ATS biçimini belirtir. Kaynak onaylanmadan
 otomatik ilan kontrolü yapılmamalıdır.
 
+Başarılı fakat sonuçsuz kaynak taramaları yedi gün, aday bulunan taramalar otuz
+gün sonra yeniden kontrol edilir. Geçici hatalar bir saatten başlayıp en fazla
+yirmi dört saate çıkan geri çekilme süresiyle tekrar denenir. Böylece toplu
+çalıştırmalar aynı şirketler için gereksiz arama kotası tüketmez.
+
 ## Kaynak onayı ve ilan senkronizasyonu
 
 Bir kaynağın kanıtını veritabanından kontrol ettikten sonra kaynağı açıkça
