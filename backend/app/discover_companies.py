@@ -15,7 +15,13 @@ from app.discovery.graph import (
     CompanyDiscoveryError,
     CompanyDiscoveryGraph,
 )
-from app.discovery_schedule import RETRYABLE_OUTCOMES, retry_due
+from app.discovery_schedule import (
+    IMMEDIATE_PROVIDER_STOP_ERRORS,
+    RETRYABLE_OUTCOMES,
+    TRANSIENT_PROVIDER_ERRORS,
+    retry_due,
+    should_open_provider_circuit,
+)
 from app.discovery.schemas import CompanyAssessment
 from app.models import Company, CompanyWebProfile, DiscoveryAttempt
 
@@ -120,6 +126,7 @@ def choose_companies(
             select(
                 DiscoveryAttempt.company_id,
                 DiscoveryAttempt.outcome,
+                DiscoveryAttempt.error_code,
                 DiscoveryAttempt.created_at,
             ).where(
                 DiscoveryAttempt.company_id.in_(company_ids),
@@ -128,10 +135,12 @@ def choose_companies(
         ).all()
 
     attempts_by_company: dict[
-        UUID, list[tuple[str, datetime]]
+        UUID, list[tuple[str, str | None, datetime]]
     ] = defaultdict(list)
-    for company_id, outcome, created_at in attempt_rows:
-        attempts_by_company[company_id].append((outcome, created_at))
+    for company_id, outcome, error_code, created_at in attempt_rows:
+        attempts_by_company[company_id].append(
+            (outcome, error_code, created_at)
+        )
 
     selected: list[tuple[UUID, str]] = []
     for company_id, company_name in rows:
@@ -190,6 +199,9 @@ def main() -> None:
 
     success_count = 0
     failure_count = 0
+    processed_count = 0
+    consecutive_provider_failures = 0
+    circuit_error_code: str | None = None
 
     with CompanyDiscoveryGraph(
         engine=engine,
@@ -200,12 +212,15 @@ def main() -> None:
             companies,
             start=1,
         ):
+            processed_count += 1
             started_at = time.monotonic()
+            current_error_code: str | None = None
 
             try:
                 result = discovery_graph.run(company_id)
             except CompanyDiscoveryError as error:
                 failure_count += 1
+                current_error_code = error.code
                 print_json(
                     {
                         "position": position,
@@ -217,6 +232,7 @@ def main() -> None:
                 )
             except Exception:
                 failure_count += 1
+                current_error_code = "unexpected_error"
                 print_json(
                     {
                         "position": position,
@@ -229,6 +245,7 @@ def main() -> None:
             else:
                 assessment = result.get("assessment")
                 error_code = result.get("error_code")
+                current_error_code = error_code
                 persisted = bool(result.get("persisted", False))
                 succeeded = persisted and not error_code
 
@@ -286,23 +303,43 @@ def main() -> None:
                     }
                 )
 
+            if current_error_code in TRANSIENT_PROVIDER_ERRORS:
+                consecutive_provider_failures += 1
+            elif current_error_code not in IMMEDIATE_PROVIDER_STOP_ERRORS:
+                consecutive_provider_failures = 0
+
+            if should_open_provider_circuit(
+                current_error_code,
+                consecutive_provider_failures,
+            ):
+                circuit_error_code = current_error_code
+                break
+
             if position < len(companies):
                 time.sleep(args.delay_seconds)
 
+    aborted_count = len(companies) - processed_count
     print_json(
         {
             "status": (
-                "completed"
-                if failure_count == 0
-                else "completed_with_errors"
+                "aborted_provider_error"
+                if circuit_error_code
+                else (
+                    "completed"
+                    if failure_count == 0
+                    else "completed_with_errors"
+                )
             ),
             "selected_count": len(companies),
+            "processed_count": processed_count,
+            "aborted_count": aborted_count,
             "success_count": success_count,
             "failure_count": failure_count,
+            "circuit_error_code": circuit_error_code,
         }
     )
 
-    if failure_count:
+    if failure_count or circuit_error_code:
         raise SystemExit(1)
 
 

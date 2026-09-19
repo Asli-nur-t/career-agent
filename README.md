@@ -29,6 +29,13 @@ kayıtlarından hesaplanan 1, 2, 4, 8, 16 ve en fazla 24 saatlik geri çekilme
 süresiyle yeniden denenir. Güvenlik doğrulamasından reddedilen çıktılar için
 bekleme süresi yedi gündür.
 
+Gemini istemcisindeki otomatik HTTP tekrarları kapalıdır. Toplu keşif komutu
+ilk kota sınırı, kimlik doğrulama veya model bulunamadı hatasında çalışmayı
+durdurur; iki ardışık bağlantı, zaman aşımı veya servis hatasında da devreyi
+açar. İşlenmeyen şirketler değiştirilmez. Kota sınırı altı saat, yapılandırma
+hataları yedi gün sonra yeniden seçilebilir. Sağlayıcının ham hata metni ve
+anahtarlar günlük çıktısına yazılmaz.
+
 ## Kaynak onayı ve ilan senkronizasyonu
 
 Bir kaynağın kanıtını veritabanından kontrol ettikten sonra kaynağı açıkça

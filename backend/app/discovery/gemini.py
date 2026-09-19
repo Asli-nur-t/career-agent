@@ -33,6 +33,49 @@ class GeminiEvaluationError(RuntimeError):
         self.code = code
 
 
+def classify_gemini_error(error: Exception) -> str:
+    """Classify provider failures without inspecting sensitive messages."""
+    current: BaseException | None = error
+
+    for _ in range(3):
+        if current is None:
+            break
+
+        status_code = getattr(current, "status_code", None)
+        if status_code is None:
+            status_code = getattr(current, "code", None)
+
+        if status_code == 429:
+            return "rate_limited"
+        if status_code in {401, 403}:
+            return "authentication_error"
+        if status_code == 404:
+            return "model_not_found"
+        if status_code in {408, 504}:
+            return "timeout"
+        if (
+            isinstance(status_code, int)
+            and 500 <= status_code < 600
+        ):
+            return "service_unavailable"
+
+        error_name = type(current).__name__.casefold()
+        if "ratelimit" in error_name:
+            return "rate_limited"
+        if "authentication" in error_name or "permission" in error_name:
+            return "authentication_error"
+        if "notfound" in error_name:
+            return "model_not_found"
+        if "timeout" in error_name:
+            return "timeout"
+        if "connection" in error_name or "network" in error_name:
+            return "connection_error"
+
+        current = current.__cause__
+
+    return "api_error"
+
+
 def _hostname_belongs_to(hostname: str, domain: str) -> bool:
     return hostname == domain or hostname.endswith(f".{domain}")
 
@@ -86,7 +129,10 @@ class GeminiEvaluator:
         self.model = model
         self._client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=30_000),
+            http_options=types.HttpOptions(
+                timeout=30_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
 
     def __enter__(self) -> "GeminiEvaluator":
@@ -117,7 +163,9 @@ class GeminiEvaluator:
             )
             raw_output = interaction.output_text or ""
         except Exception as error:
-            raise GeminiEvaluationError("api_error") from error
+            raise GeminiEvaluationError(
+                classify_gemini_error(error)
+            ) from error
 
         try:
             assessment = CompanyAssessment.model_validate_json(
