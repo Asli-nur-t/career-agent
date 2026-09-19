@@ -356,3 +356,100 @@ class CareerSource(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class JobPosting(Base):
+    __tablename__ = "job_postings"
+    __table_args__ = (
+        UniqueConstraint(
+            "career_source_id",
+            "external_id",
+            name="uq_job_postings_source_external_id",
+        ),
+        CheckConstraint(
+            "char_length(btrim(external_id)) > 0",
+            name="ck_job_postings_external_id_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(btrim(title)) > 0",
+            name="ck_job_postings_title_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(btrim(job_url)) > 0",
+            name="ck_job_postings_url_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(content_hash) = 64",
+            name="ck_job_postings_content_hash_length",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'closed')",
+            name="ck_job_postings_status",
+        ),
+        CheckConstraint(
+            "(status = 'active' AND closed_at IS NULL) OR "
+            "(status = 'closed' AND closed_at IS NOT NULL)",
+            name="ck_job_postings_closed_state",
+        ),
+        Index(
+            "ix_job_postings_source_status",
+            "career_source_id",
+            "status",
+        ),
+        Index(
+            "ix_job_postings_status_last_seen",
+            "status",
+            "last_seen_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+    career_source_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("career_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    job_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    apply_url: Mapped[str | None] = mapped_column(String(2048))
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(500))
+    department: Mapped[str | None] = mapped_column(String(300))
+    employment_type: Mapped[str | None] = mapped_column(String(100))
+    description_text: Mapped[str | None] = mapped_column(Text)
+    is_remote: Mapped[bool | None] = mapped_column(Boolean)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        server_default="active",
+        nullable=False,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
