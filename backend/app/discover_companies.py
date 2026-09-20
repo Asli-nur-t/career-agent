@@ -15,6 +15,10 @@ from app.discovery.graph import (
     CompanyDiscoveryError,
     CompanyDiscoveryGraph,
 )
+from app.discovery.evaluator_factory import (
+    EvaluatorConfigurationError,
+    build_evaluator,
+)
 from app.discovery_schedule import (
     IMMEDIATE_PROVIDER_STOP_ERRORS,
     RETRYABLE_OUTCOMES,
@@ -190,12 +194,23 @@ def main() -> None:
         return
 
     serper_key = os.environ.get("SERPER_API_KEY", "").strip()
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not serper_key:
+        raise SystemExit("SERPER_API_KEY yapılandırılmamış.")
 
-    if not serper_key or not gemini_key:
-        raise SystemExit(
-            "Gerekli API anahtarları yapılandırılmamış."
+    try:
+        evaluator = build_evaluator(
+            provider=os.environ.get("EVALUATOR_PROVIDER", "ollama"),
+            gemini_key=os.environ.get("GEMINI_API_KEY", ""),
+            ollama_model=os.environ.get("OLLAMA_MODEL", "qwen3:8b"),
+            ollama_base_url=os.environ.get(
+                "OLLAMA_BASE_URL",
+                "http://127.0.0.1:11434",
+            ),
         )
+    except EvaluatorConfigurationError:
+        raise SystemExit(
+            "Değerlendirici yapılandırması geçersiz."
+        ) from None
 
     success_count = 0
     failure_count = 0
@@ -206,7 +221,7 @@ def main() -> None:
     with CompanyDiscoveryGraph(
         engine=engine,
         serper_key=serper_key,
-        gemini_key=gemini_key,
+        evaluator=evaluator,
     ) as discovery_graph:
         for position, (company_id, company_name) in enumerate(
             companies,

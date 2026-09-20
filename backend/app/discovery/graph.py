@@ -7,10 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.discovery.gemini import (
-    GeminiEvaluationError,
-    GeminiEvaluator,
-)
+from app.discovery.evaluator import CompanyEvaluator, EvaluationError
 from app.discovery.safety import build_company_queries, safe_text
 from app.discovery.schemas import CompanyAssessment, SearchResult
 from app.discovery.serper import SerperClient, SerperError
@@ -73,11 +70,11 @@ class CompanyDiscoveryGraph:
         *,
         engine: Engine,
         serper_key: str,
-        gemini_key: str,
+        evaluator: CompanyEvaluator,
     ) -> None:
         self._engine = engine
         self._search_client = SerperClient(serper_key)
-        self._evaluator = GeminiEvaluator(gemini_key)
+        self._evaluator = evaluator
         self._website_verifier = SafeWebsiteVerifier()
         self._graph = self._build_graph()
 
@@ -243,7 +240,7 @@ class CompanyDiscoveryGraph:
                 state["company_name"],
                 state["search_results"],
             )
-        except GeminiEvaluationError as error:
+        except EvaluationError as error:
             outcome = (
                 "rejected"
                 if error.code in REJECTED_EVALUATION_CODES

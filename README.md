@@ -24,7 +24,22 @@ gün sonra yeniden kontrol edilir. Geçici hatalar bir saatten başlayıp en faz
 yirmi dört saate çıkan geri çekilme süresiyle tekrar denenir. Böylece toplu
 çalıştırmalar aynı şirketler için gereksiz arama kotası tüketmez.
 
-Şirket web profili keşfindeki geçici arama ve model hataları da mevcut deneme
+Şirket web profili değerlendirmesinde varsayılan sağlayıcı yerel Ollama'dır.
+Ollama yalnızca `http://127.0.0.1:11434` adresindeki `qwen3:8b` modeliyle
+çalışır; farklı ağ adresleri ve modeller reddedilir. `.env` yapılandırması:
+
+```dotenv
+EVALUATOR_PROVIDER=ollama
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Gemini'yi isteğe bağlı kullanmak için `EVALUATOR_PROVIDER=gemini` seçilir ve
+`GEMINI_API_KEY` tanımlanır. Model çıktısı sağlayıcıdan bağımsız olarak aynı
+Pydantic şeması, URL allowlist'i ve web doğrulamasından geçirilir. Yerel model
+tek başına bir şirket profilini doğrulanmış duruma getiremez.
+
+Şirket web profili keşfindeki geçici arama ve model hataları mevcut deneme
 kayıtlarından hesaplanan 1, 2, 4, 8, 16 ve en fazla 24 saatlik geri çekilme
 süresiyle yeniden denenir. Güvenlik doğrulamasından reddedilen çıktılar için
 bekleme süresi yedi gündür.
