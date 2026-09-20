@@ -752,6 +752,10 @@ class CandidateProfile(Base):
             name="ck_candidate_profiles_secondary_roles_array",
         ),
         CheckConstraint(
+            "jsonb_typeof(tertiary_roles) = 'array'",
+            name="ck_candidate_profiles_tertiary_roles_array",
+        ),
+        CheckConstraint(
             "jsonb_typeof(skills) = 'array'",
             name="ck_candidate_profiles_skills_array",
         ),
@@ -800,6 +804,12 @@ class CandidateProfile(Base):
         nullable=False,
     )
     secondary_roles: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    tertiary_roles: Mapped[list[str]] = mapped_column(
         JSONB,
         default=list,
         server_default=text("'[]'::jsonb"),

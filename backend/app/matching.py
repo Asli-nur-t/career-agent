@@ -118,6 +118,7 @@ class CandidateProfileSpec(BaseModel):
     label: str = Field(min_length=1, max_length=100)
     target_roles: list[str] = Field(min_length=1, max_length=30)
     secondary_roles: list[str] = Field(default_factory=list, max_length=30)
+    tertiary_roles: list[str] = Field(default_factory=list, max_length=30)
     skills: list[str] = Field(min_length=1, max_length=100)
     preferred_locations: list[str] = Field(
         default_factory=list,
@@ -142,6 +143,7 @@ class CandidateProfileSpec(BaseModel):
     @field_validator(
         "target_roles",
         "secondary_roles",
+        "tertiary_roles",
         "skills",
         "preferred_locations",
         "excluded_locations",
@@ -183,6 +185,7 @@ class CandidateProfileSpec(BaseModel):
         for key in (
             "target_roles",
             "secondary_roles",
+            "tertiary_roles",
             "skills",
             "preferred_locations",
             "excluded_locations",
@@ -195,6 +198,8 @@ class CandidateProfileSpec(BaseModel):
             data.pop("excluded_locations")
         if not data["allowed_work_modes"]:
             data.pop("allowed_work_modes")
+        if not data["tertiary_roles"]:
+            data.pop("tertiary_roles")
         if data["location_filter_mode"] == "prefer":
             data.pop("location_filter_mode")
         if data["max_listing_age_days"] == 30:
@@ -281,6 +286,8 @@ def score_job(
     target_description = _first_match(description, profile.target_roles)
     secondary_title = _first_match(title, profile.secondary_roles)
     secondary_description = _first_match(description, profile.secondary_roles)
+    tertiary_title = _first_match(title, profile.tertiary_roles)
+    tertiary_description = _first_match(description, profile.tertiary_roles)
     if target_title:
         score += 40
         matched.append(f"target_role:{target_title}")
@@ -293,6 +300,12 @@ def score_job(
     elif secondary_description:
         score += 10
         matched.append(f"secondary_role_context:{secondary_description}")
+    elif tertiary_title:
+        score += 15
+        matched.append(f"tertiary_role:{tertiary_title}")
+    elif tertiary_description:
+        score += 5
+        matched.append(f"tertiary_role_context:{tertiary_description}")
     else:
         risks.append("role_not_matched")
 

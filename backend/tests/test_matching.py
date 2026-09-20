@@ -197,6 +197,30 @@ def test_turkish_role_equivalent_matches_english_profile(
     assert "secondary_role:Python Developer" in turkish.matched_terms
 
 
+def test_tertiary_role_surfaces_as_review_without_primary_priority() -> None:
+    profile = CandidateProfileSpec(
+        label="tertiary-profile",
+        target_roles=["AI Engineer"],
+        secondary_roles=["Backend Engineer"],
+        tertiary_roles=["Mobile Developer"],
+        skills=["Flutter", "Dart"],
+        preferred_locations=["İstanbul"],
+    )
+    result = score_job(
+        profile,
+        JobMatchInput(
+            title="Mobile Developer",
+            description_text="Flutter and Dart mobile application development",
+            location="İstanbul",
+            work_mode="hybrid",
+        ),
+    )
+
+    assert result.recommendation == "review"
+    assert result.score < 55
+    assert "tertiary_role:Mobile Developer" in result.matched_terms
+
+
 def test_turkish_specialist_matches_without_senior_penalty() -> None:
     profile = CandidateProfileSpec(
         label="specialist-profile",

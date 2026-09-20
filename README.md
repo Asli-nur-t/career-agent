@@ -218,6 +218,12 @@ kullanarak etkin ilanlara açıklanabilir bir 0-100 puan verir. Sonuçlar
 `job_matches` tablosunda `strong_apply`, `apply`, `review` veya `skip` olarak
 saklanır.
 
+Rol önceliği üç seviyelidir: `target_roles` ana hedefleri,
+`secondary_roles` güçlü alternatifleri, `tertiary_roles` ise yalnızca haberdar
+olunmak istenen düşük öncelikli alanları temsil eder. Üçüncül rol başlıkta
+eşleştiğinde ilan en fazla manuel inceleme seviyesine taşınır; tek başına güçlü
+başvuru önerisi üretmez.
+
 Profilde `preferred_locations` ve `excluded_locations` konum kurallarını,
 `allowed_work_modes` ise `remote`, `hybrid` ve `onsite` seçeneklerini belirler.
 `location_filter_mode` değeri `prefer` olduğunda konum yalnızca puanı etkiler;
@@ -258,3 +264,43 @@ hesaplanmaz. `--refresh` bütün etkin ilanları yeniden puanlar. Yeniden puanla
 `shortlisted`, `dismissed` ve `applied` gibi insan inceleme kararlarını
 değiştirmez. Bu puan bir başvuru kararı değildir; sonraki yerel model aşamasına
 gidecek küçük aday kümesini maliyetsiz biçimde daraltır.
+
+## CV'den yerel profil taslağı
+
+PDF ve DOCX CV dosyaları yalnızca yerel makinede işlenir. Dosya uzantısı tek
+başına yeterli kabul edilmez; imza, boyut, PDF sayfa sınırı ve DOCX arşiv yapısı
+doğrulanır. Şifreli veya aktif davranış içeren PDF'ler ile şüpheli, aşırı
+sıkıştırılmış ya da yol geçişi içeren DOCX arşivleri reddedilir. CV dosyasının
+kendisi veritabanına veya repoya kopyalanmaz.
+
+Önce yalnızca taslağı görüntüleyin:
+
+```bash
+PYTHONPATH=backend python -m app.import_candidate_cv \
+  --file private/AslinurTopcuCV.pdf \
+  --profile-file private/candidate_profile.json
+```
+
+Metin yerel Ollama'ya gönderilmeden önce e-posta, telefon, URL ve olası kimlik
+numaraları temizlenir. CV içeriği güvenilmeyen veri kabul edilir. Yerel modelin
+çıkardığı her rol, beceri, eğitim, dil ve deneyim değeri CV metninden birebir
+kanıt göstermek zorundadır; kanıtsız çıktı tümüyle reddedilir.
+
+Taslak incelendikten sonra özel profil dosyasına açıkça uygulamak için:
+
+```bash
+PYTHONPATH=backend python -m app.import_candidate_cv \
+  --file private/AslinurTopcuCV.pdf \
+  --profile-file private/candidate_profile.json \
+  --apply
+
+PYTHONPATH=backend python -m app.configure_candidate_profile \
+  --file private/candidate_profile.json
+```
+
+`--apply` mevcut hedef ve ikincil rolleri, konumları, hariç tutulan terimleri
+veya çalışma biçimi tercihlerini değiştirmez. CV'deki roller geçmiş deneyimi
+gösterebilir; iş tercihi sayılmaz ve yalnızca önizlemede gösterilir. Yalnızca
+kanıtlanan ve normalize edilen somut beceriler eklenir; işlemden önce
+`candidate_profile.before_cv_import.json` yedeği oluşturulur. Veritabanı ikinci
+komut çalıştırılana kadar güncellenmez.

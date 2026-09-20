@@ -52,6 +52,7 @@ def _to_spec(profile: CandidateProfile) -> CandidateProfileSpec:
         label=profile.label,
         target_roles=profile.target_roles,
         secondary_roles=profile.secondary_roles,
+        tertiary_roles=profile.tertiary_roles,
         skills=profile.skills,
         preferred_locations=profile.preferred_locations,
         excluded_locations=profile.excluded_locations,

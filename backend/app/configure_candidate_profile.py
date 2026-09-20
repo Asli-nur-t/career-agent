@@ -55,6 +55,7 @@ def save_profile(database: object, spec: CandidateProfileSpec) -> tuple[str, boo
             session.add(profile)
         profile.target_roles = spec.target_roles
         profile.secondary_roles = spec.secondary_roles
+        profile.tertiary_roles = spec.tertiary_roles
         profile.skills = spec.skills
         profile.preferred_locations = spec.preferred_locations
         profile.excluded_locations = spec.excluded_locations

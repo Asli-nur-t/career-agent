@@ -16,6 +16,9 @@
     ".NET Developer",
     "Research Engineer"
   ],
+  "tertiary_roles": [
+    "Mobile Developer"
+  ],
   "skills": [
     "Python",
     "RAG",

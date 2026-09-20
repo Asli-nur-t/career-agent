@@ -5,5 +5,7 @@ psycopg[binary]>=3.2,<4.0
 python-dotenv>=1.0,<2.0
 alembic>=1.16,<2.0
 langgraph>=1.0,<2.0
+defusedxml>=0.7,<1.0
 google-genai
 httpx
+pypdf>=6.19,<7.0
