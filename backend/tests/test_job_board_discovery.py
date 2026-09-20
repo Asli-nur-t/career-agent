@@ -16,8 +16,8 @@ class JobBoardDiscoveryTests(unittest.TestCase):
     def test_verified_brand_is_used_as_search_identity(self) -> None:
         company_id = uuid4()
         cases = (
-            ("verified", "Acme", "Acme"),
-            ("candidate_found", "Unverified Brand", "ACME A.Ş."),
+            ("verified", "Acme", "ACME"),
+            ("candidate_found", "Unverified Brand", "ACME"),
         )
         for status, brand_name, expected in cases:
             with self.subTest(status=status):

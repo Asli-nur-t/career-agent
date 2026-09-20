@@ -17,7 +17,7 @@ def profile() -> CandidateProfileSpec:
     return CandidateProfileSpec(
         label="test-profile",
         target_roles=["AI Engineer", "Machine Learning Engineer"],
-        secondary_roles=["Backend Engineer"],
+        secondary_roles=["Backend Engineer", "Python Developer"],
         skills=["Python", "RAG", "LLM", "FastAPI", "PostgreSQL"],
         preferred_locations=["İstanbul"],
         excluded_keywords=["firmware", "sales"],
@@ -69,9 +69,7 @@ def test_senior_excluded_job_is_skipped(profile: CandidateProfileSpec) -> None:
 def test_turkish_text_and_short_terms_use_word_boundaries(
     profile: CandidateProfileSpec,
 ) -> None:
-    assert normalize_match_text("İstanbul'da Yapay Zekâ") == (
-        "istanbul da yapay zeka"
-    )
+    assert normalize_match_text("İstanbul'da Yapay Zekâ") == "istanbul da ai"
     unrelated = score_job(
         profile,
         JobMatchInput(
@@ -82,6 +80,79 @@ def test_turkish_text_and_short_terms_use_word_boundaries(
     )
     assert "target_role:AI Engineer" not in unrelated.matched_terms
     assert "role_not_matched" in unrelated.risk_flags
+
+
+def test_turkish_role_equivalent_matches_english_profile(
+    profile: CandidateProfileSpec,
+) -> None:
+    turkish = score_job(
+        profile,
+        JobMatchInput(
+            title="Python Geliştirici",
+            description_text="Python ile servis geliştirme",
+            location="İstanbul",
+        ),
+    )
+    english = score_job(
+        profile,
+        JobMatchInput(
+            title="Python Developer",
+            description_text="Python ile servis geliştirme",
+            location="İstanbul",
+        ),
+    )
+
+    assert turkish.score == english.score
+    assert turkish.score >= 35
+    assert turkish.recommendation == "review"
+    assert "secondary_role:Python Developer" in turkish.matched_terms
+
+
+def test_turkish_specialist_matches_without_senior_penalty() -> None:
+    profile = CandidateProfileSpec(
+        label="specialist-profile",
+        target_roles=["AI Specialist"],
+        skills=["Python"],
+    )
+    turkish = score_job(
+        profile,
+        JobMatchInput(
+            title="Yapay Zekâ Uzmanı",
+            description_text="Python ile yapay zekâ çözümleri geliştirir.",
+        ),
+    )
+    english = score_job(
+        profile,
+        JobMatchInput(
+            title="AI Specialist",
+            description_text="Python ile yapay zekâ çözümleri geliştirir.",
+        ),
+    )
+
+    assert turkish.score == english.score
+    assert "target_role:AI Specialist" in turkish.matched_terms
+    assert not any(
+        flag.startswith("senior_title:")
+        for flag in turkish.risk_flags
+    )
+
+
+def test_turkish_senior_level_is_canonicalized(
+    profile: CandidateProfileSpec,
+) -> None:
+    result = score_job(
+        profile,
+        JobMatchInput(
+            title="Kıdemli Python Geliştirici",
+            description_text="Python ile servis geliştirme",
+        ),
+    )
+
+    assert normalize_match_text(
+        "Kıdemli Python Geliştirici"
+    ) == "senior python developer"
+    assert "secondary_role:Python Developer" in result.matched_terms
+    assert "senior_title:senior" in result.risk_flags
 
 
 def test_profile_hash_ignores_list_order_and_duplicates() -> None:

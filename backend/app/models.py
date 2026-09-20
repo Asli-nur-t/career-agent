@@ -584,7 +584,8 @@ class JobBoardCandidate(Base):
             name="ck_job_board_candidates_company_identity",
         ),
         CheckConstraint(
-            "status IN ('needs_review', 'approved', 'rejected')",
+            "status IN "
+            "('needs_review', 'approved', 'rejected', 'filtered_out')",
             name="ck_job_board_candidates_status",
         ),
         CheckConstraint(

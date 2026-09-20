@@ -21,6 +21,7 @@ from app.job_boards import (
     JobBoardListing,
     JobBoardSearchConnector,
     build_job_board_query,
+    choose_job_board_identity,
 )
 from app.models import Company, CompanyWebProfile, JobBoardCandidate
 
@@ -84,10 +85,9 @@ def company_for_search(
         ).one_or_none()
     if row is None:
         raise ValueError("company_not_found")
-    search_name = (
-        row.brand_name
-        if row.status == "verified" and row.brand_name
-        else row.name
+    search_name = choose_job_board_identity(
+        row.name,
+        row.brand_name if row.status == "verified" else None,
     )
     return row.id, row.name, search_name
 
@@ -120,7 +120,11 @@ def due_companies(
             .limit(limit)
         ).all()
     return [
-        (company_id, name, brand_name or name)
+        (
+            company_id,
+            name,
+            choose_job_board_identity(name, brand_name),
+        )
         for company_id, name, brand_name in rows
     ]
 
@@ -398,6 +402,7 @@ def main() -> None:
             try:
                 discovery = connector.search(
                     search_name,
+                    aliases=(company_name,),
                     max_results=args.max_results,
                 )
                 persisted = persist_job_board_candidates(
@@ -420,6 +425,9 @@ def main() -> None:
                     "company_id": str(company_id),
                     "company_name": company_name,
                     "raw_result_count": discovery.raw_result_count,
+                    "filtered_result_count": (
+                        discovery.filtered_result_count
+                    ),
                     "candidate_count": len(discovery.listings),
                     **persisted,
                 }

@@ -171,6 +171,21 @@ taranır. Sağlayıcı hataları sınırlı geri çekilme süresiyle kaydedilir;
 kimlik doğrulama hatasında batch işlemi hemen durur. Böylece aynı şirket için
 gereksiz Serper sorguları yapılmaz.
 
+Arama sonucu yalnızca izin verilen ilan URL'sine sahip olduğu için kabul
+edilmez; başlık, özet veya URL içinde doğrulanmış şirket kimliği de aranır.
+`Inmanage` ve `4ARC` gibi tek kelimelik veya kısa markalarda arama ticari
+kimlikle yapılır. Eski kayıtları bu kurala göre önce değişiklik yapmadan
+denetleyin, ardından yalnızca eşleşmeyenleri `filtered_out` durumuna taşıyın:
+
+```bash
+PYTHONPATH=backend python -m app.audit_job_board_candidates
+PYTHONPATH=backend python -m app.audit_job_board_candidates --apply
+```
+
+Denetim hiçbir kaydı silmez. `--apply` verilmediğinde transaction içinde durum
+değişikliği yapılmaz. `filtered_out` kayıtları onay kuyruğuna veya ilan
+eşleştirmesine girmez; denetim kanıtı kayıt üzerinde korunur.
+
 Bekleyen adayları özel aday profiline göre puanlanmış biçimde listelemek için:
 
 ```bash

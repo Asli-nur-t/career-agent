@@ -63,6 +63,7 @@ class JobBoardActivity:
 class JobBoardSearch:
     query: str
     raw_result_count: int
+    filtered_result_count: int
     listings: tuple[JobBoardListing, ...]
 
 
@@ -71,6 +72,25 @@ _KARIYER_CLOSED_MARKERS = (
     "bu is ilani artik basvuru kabul etmiyor",
     "bu ilan artik basvuru kabul etmiyor",
 )
+
+_GENERIC_COMPANY_WORDS = {
+    "anonim",
+    "as",
+    "company",
+    "danismanlik",
+    "hizmetleri",
+    "limited",
+    "ltd",
+    "muhendislik",
+    "sanayi",
+    "sirketi",
+    "sti",
+    "teknoloji",
+    "technologies",
+    "technology",
+    "ticaret",
+    "yazilim",
+}
 
 
 def _marker_text(value: str) -> str:
@@ -83,6 +103,67 @@ def _marker_text(value: str) -> str:
             if not unicodedata.combining(character)
         ).split()
     )
+
+
+def choose_job_board_identity(
+    company_name: object,
+    brand_name: object,
+) -> str:
+    company = clean_company_name(company_name)
+    brand = safe_text(brand_name, 300)
+    brand_text = _marker_text(brand)
+    tokens = brand_text.split()
+    meaningful = [
+        token
+        for token in tokens
+        if token not in _GENERIC_COMPANY_WORDS
+    ]
+    if len(tokens) >= 2 and meaningful:
+        return brand
+    return company
+
+
+def listing_matches_company(
+    listing: JobBoardListing,
+    company_names: tuple[str, ...],
+) -> bool:
+    text = _marker_text(
+        " ".join(
+            value
+            for value in (
+                listing.title,
+                listing.snippet,
+                listing.listing_url,
+            )
+            if value
+        )
+    )
+    for name in company_names:
+        try:
+            cleaned = clean_company_name(name)
+        except ValueError:
+            continue
+        identity = _marker_text(cleaned)
+        tokens = identity.split()
+        if len(tokens) >= 2 and re.search(
+            rf"(?<![a-z0-9]){re.escape(identity)}(?![a-z0-9])",
+            text,
+        ):
+            return True
+        meaningful = [
+            token
+            for token in tokens
+            if token not in _GENERIC_COMPANY_WORDS and len(token) >= 3
+        ]
+        if len(meaningful) >= 2 and all(
+            re.search(
+                rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])",
+                text,
+            )
+            for token in meaningful
+        ):
+            return True
+    return False
 
 
 class JobBoardActivityVerifier:
@@ -303,6 +384,7 @@ class JobBoardSearchConnector:
         self,
         company_name: object,
         *,
+        aliases: tuple[str, ...] = (),
         max_results: int = MAX_BOARD_RESULTS,
     ) -> JobBoardSearch:
         if not 1 <= max_results <= MAX_BOARD_RESULTS:
@@ -314,6 +396,7 @@ class JobBoardSearchConnector:
         )
         listings: list[JobBoardListing] = []
         seen: set[tuple[str, str]] = set()
+        filtered = 0
         for result in results:
             try:
                 listing = normalize_job_board_result(result)
@@ -323,6 +406,10 @@ class JobBoardSearchConnector:
             if key in seen:
                 continue
             seen.add(key)
+            identities = (clean_company_name(company_name), *aliases)
+            if not listing_matches_company(listing, identities):
+                filtered += 1
+                continue
             if self._activity_verifier is not None:
                 activity = self._activity_verifier.check(listing)
                 listing = replace(
@@ -335,5 +422,6 @@ class JobBoardSearchConnector:
         return JobBoardSearch(
             query=query,
             raw_result_count=len(results),
+            filtered_result_count=filtered,
             listings=tuple(listings),
         )

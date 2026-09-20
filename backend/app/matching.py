@@ -16,9 +16,25 @@ from pydantic import (
 )
 
 
-MATCHER_VERSION = "rules-v1"
+MATCHER_VERSION = "rules-v2"
 _WHITESPACE = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^a-z0-9]+")
+_TERM_TRANSLATIONS = (
+    # Longer phrases must run before their component words.
+    ("uzman yardimcisi", "associate specialist"),
+    ("yardimci uzman", "associate specialist"),
+    ("makine ogrenmesi", "machine learning"),
+    ("veri bilimci", "data scientist"),
+    ("yapay zeka", "ai"),
+    ("kidemli", "senior"),
+    ("gelistirici", "developer"),
+    ("uzmani", "specialist"),
+    ("uzman", "specialist"),
+    ("yazilim", "software"),
+    ("muhendisi", "engineer"),
+    ("muhendis", "engineer"),
+    ("stajyer", "intern"),
+)
 _SENIOR_TERMS = (
     "senior",
     "sr",
@@ -28,7 +44,6 @@ _SENIOR_TERMS = (
     "manager",
     "mudur",
     "yonetici",
-    "uzman",
 )
 _JUNIOR_TERMS = (
     "junior",
@@ -38,6 +53,8 @@ _JUNIOR_TERMS = (
     "entry level",
     "yeni mezun",
     "yetistirilmek uzere",
+    "associate specialist",
+    "intern",
 )
 _EXPERIENCE_PATTERNS = (
     re.compile(r"\b(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b"),
@@ -62,7 +79,14 @@ def normalize_match_text(value: str | None) -> str:
         for character in value
         if not unicodedata.combining(character)
     )
-    return _WHITESPACE.sub(" ", _NON_WORD.sub(" ", value)).strip()
+    value = _WHITESPACE.sub(" ", _NON_WORD.sub(" ", value)).strip()
+    for source, target in _TERM_TRANSLATIONS:
+        value = re.sub(
+            rf"(?<![a-z0-9]){re.escape(source)}(?![a-z0-9])",
+            target,
+            value,
+        )
+    return value
 
 
 def _contains(text: str, term: str) -> bool:
@@ -221,7 +245,7 @@ def score_job(
         score += 15
         matched.append(f"target_role_context:{target_description}")
     elif secondary_title:
-        score += 28
+        score += 30
         matched.append(f"secondary_role:{secondary_title}")
     elif secondary_description:
         score += 10
