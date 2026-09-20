@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -51,6 +52,15 @@ class JobBoardDiscoveryTests(unittest.TestCase):
                 title="AI Engineer",
                 snippet="Build AI systems",
                 search_position=1,
+                location="İstanbul, Türkiye",
+                work_mode="hybrid",
+                employment_type="full_time",
+                published_at=datetime(
+                    2026,
+                    9,
+                    18,
+                    tzinfo=timezone.utc,
+                ),
             ),
             JobBoardListing(
                 provider="kariyer",
@@ -89,7 +99,11 @@ class JobBoardDiscoveryTests(unittest.TestCase):
         compiled = upsert.compile(dialect=postgresql.dialect())
         sql = str(compiled)
         self.assertIn("CASE WHEN", sql)
+        self.assertIn("least", sql.lower())
+        self.assertIn("coalesce", sql.lower())
         self.assertIn("needs_review", compiled.params.values())
+        self.assertIn("hybrid", compiled.params.values())
+        self.assertIn("full_time", compiled.params.values())
         session.commit.assert_called_once()
 
     def test_empty_candidate_set_does_not_open_transaction(self) -> None:

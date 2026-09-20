@@ -32,11 +32,16 @@
   ],
   "preferred_locations": [
     "İstanbul",
-    "Kocaeli",
-    "Türkiye",
-    "Remote",
-    "Hybrid"
+    "Kocaeli"
   ],
+  "excluded_locations": [],
+  "allowed_work_modes": [
+    "remote",
+    "hybrid",
+    "onsite"
+  ],
+  "location_filter_mode": "require",
+  "max_listing_age_days": 30,
   "excluded_keywords": [
     "sales",
     "marketing",

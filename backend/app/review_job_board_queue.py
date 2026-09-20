@@ -3,6 +3,7 @@
 import argparse
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Engine, select
@@ -23,6 +24,11 @@ class RankedCandidate:
     company_name: str
     title: str
     listing_url: str
+    location: str | None
+    work_mode: str
+    employment_type: str
+    published_at: datetime | None
+    activity_state: str
     score: int
     recommendation: str
     matched_terms: list[str]
@@ -48,6 +54,10 @@ def _to_spec(profile: CandidateProfile) -> CandidateProfileSpec:
         secondary_roles=profile.secondary_roles,
         skills=profile.skills,
         preferred_locations=profile.preferred_locations,
+        excluded_locations=profile.excluded_locations,
+        allowed_work_modes=profile.allowed_work_modes,
+        location_filter_mode=profile.location_filter_mode,
+        max_listing_age_days=profile.max_listing_age_days,
         excluded_keywords=profile.excluded_keywords,
         max_years_experience=profile.max_years_experience,
         remote_allowed=profile.remote_allowed,
@@ -64,6 +74,10 @@ def rank_candidate(
     listing_url: str,
     snippet: str | None,
     location: str | None,
+    work_mode: str = "unknown",
+    employment_type: str = "unknown",
+    published_at: datetime | None = None,
+    activity_state: str = "unknown",
 ) -> RankedCandidate:
     result = score_job(
         profile,
@@ -71,6 +85,9 @@ def rank_candidate(
             title=title,
             description_text=snippet,
             location=location,
+            employment_type=employment_type,
+            work_mode=work_mode,
+            published_at=published_at,
         ),
     )
     return RankedCandidate(
@@ -79,6 +96,11 @@ def rank_candidate(
         company_name=company_name,
         title=title,
         listing_url=listing_url,
+        location=location,
+        work_mode=work_mode,
+        employment_type=employment_type,
+        published_at=published_at,
+        activity_state=activity_state,
         score=result.score,
         recommendation=result.recommendation,
         matched_terms=result.matched_terms,
@@ -132,6 +154,10 @@ def load_queue(
             listing_url=candidate.listing_url,
             snippet=candidate.snippet,
             location=candidate.location,
+            work_mode=candidate.work_mode,
+            employment_type=candidate.employment_type,
+            published_at=candidate.published_at,
+            activity_state=candidate.activity_state,
         )
         for candidate, company_name in rows
     ]
@@ -180,6 +206,11 @@ def main() -> None:
             {
                 **asdict(candidate),
                 "candidate_id": str(candidate.candidate_id),
+                "published_at": (
+                    candidate.published_at.isoformat()
+                    if candidate.published_at
+                    else None
+                ),
             }
             for candidate in candidates
         ],

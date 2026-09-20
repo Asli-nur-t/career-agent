@@ -99,6 +99,16 @@ veya okunamayan kayıt `needs_review` durumunda yazılır. Mesajın bulunmaması
 ilanın aktif olduğu anlamına gelmez. Sistem giriş/CAPTCHA kontrollerini aşmaz.
 Bu kayıtlar onaylanmadan `job_postings` tablosuna veya başvuru akışına girmez.
 
+Arama başlığı ve özetinde açıkça görülen konum, çalışma biçimi, istihdam türü,
+göreli yayın tarihi ve aktif/kapalı işaretleri aday kaydına eklenir. Eksik bilgi
+tahmin edilmez; `unknown` veya `null` olarak kalır. Bir arama özeti aktiflik
+işareti taşısa bile ilan otomatik onaylanmaz. Açık kapanma işareti ise adayın
+yanlışlıkla başvuru kuyruğuna girmemesi için otomatik ret sebebidir.
+Kariyer.net ilanı aynı platformdaki farklı bir ilan kimliğine yönlenirse özgün
+ilan artık erişilebilir kabul edilmez ve aday kapalı olarak işaretlenir. Giriş,
+ana sayfa veya biçimi tanınmayan yönlendirmeler ise yanlış ret üretmemek için
+`unknown` kalır.
+
 İlk aşamada kota kullanımını ve yanlış şirket eşleşmesini sınırlamak için arama
 tek bir açık şirket kimliğiyle çalışır:
 
@@ -203,10 +213,20 @@ onaylanır.
 ## Aday profili ve ilan eşleştirme
 
 Eşleştirme ilk aşamada harici model veya ücretli API çağırmaz. Hedef rol,
-beceri, konum, uzaktan çalışma, kıdem, deneyim şartı ve hariç tutulan terimleri
+beceri, konum, çalışma biçimi, ilan yaşı, kıdem, deneyim şartı ve hariç tutulan terimleri
 kullanarak etkin ilanlara açıklanabilir bir 0-100 puan verir. Sonuçlar
 `job_matches` tablosunda `strong_apply`, `apply`, `review` veya `skip` olarak
 saklanır.
+
+Profilde `preferred_locations` ve `excluded_locations` konum kurallarını,
+`allowed_work_modes` ise `remote`, `hybrid` ve `onsite` seçeneklerini belirler.
+`location_filter_mode` değeri `prefer` olduğunda konum yalnızca puanı etkiler;
+`require` olduğunda bilinen ve tercih dışı konumlar elenir. Konumu bilinmeyen
+ilanlar sessizce elenmez, `location_unknown` riskiyle manuel incelemeye kalır.
+`max_listing_age_days` sınırından eski olduğu açıkça bilinen ilanlar `skip`
+olur; yayın tarihi bilinmeyenler `published_date_unknown` olarak işaretlenir.
+Örnek profil yalnızca İstanbul ve Kocaeli'deki yerinde/hibrit ilanları veya
+konumdan bağımsız uzaktan ilanları kabul edecek şekilde düzenlenebilir.
 
 Örnek profili özel alana kopyalayıp düzenleyin; `private/` Git tarafından
 yok sayılır:

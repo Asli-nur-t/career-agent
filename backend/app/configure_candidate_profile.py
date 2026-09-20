@@ -57,6 +57,10 @@ def save_profile(database: object, spec: CandidateProfileSpec) -> tuple[str, boo
         profile.secondary_roles = spec.secondary_roles
         profile.skills = spec.skills
         profile.preferred_locations = spec.preferred_locations
+        profile.excluded_locations = spec.excluded_locations
+        profile.allowed_work_modes = spec.allowed_work_modes
+        profile.location_filter_mode = spec.location_filter_mode
+        profile.max_listing_age_days = spec.max_listing_age_days
         profile.excluded_keywords = spec.excluded_keywords
         profile.max_years_experience = spec.max_years_experience
         profile.remote_allowed = spec.remote_allowed

@@ -9,6 +9,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Literal, Protocol
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
@@ -19,6 +20,7 @@ from app.discovery.safety import (
 )
 from app.discovery.schemas import SearchResult
 from app.discovery.web_verifier import WebsiteVerificationError
+from app.job_metadata import extract_job_metadata
 
 
 MAX_BOARD_RESULTS = 10
@@ -47,16 +49,30 @@ class JobBoardListing:
     title: str
     snippet: str | None
     search_position: int
-    activity_state: Literal["closed", "unknown"] = "unknown"
+    location: str | None = None
+    work_mode: Literal["remote", "hybrid", "onsite", "unknown"] = "unknown"
+    employment_type: Literal[
+        "full_time",
+        "part_time",
+        "contract",
+        "internship",
+        "temporary",
+        "unknown",
+    ] = "unknown"
+    published_at: datetime | None = None
+    published_precision: str | None = None
+    activity_state: Literal["active", "closed", "unknown"] = "unknown"
     activity_code: str = "not_checked"
     activity_url: str | None = None
+    activity_checked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
 class JobBoardActivity:
-    state: Literal["closed", "unknown"]
+    state: Literal["active", "closed", "unknown"]
     code: str
     checked_url: str | None
+    checked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -173,12 +189,21 @@ class JobBoardActivityVerifier:
         self._page_reader = page_reader
 
     def check(self, listing: JobBoardListing) -> JobBoardActivity:
+        if listing.activity_state != "unknown":
+            return JobBoardActivity(
+                state=listing.activity_state,
+                code=listing.activity_code,
+                checked_url=listing.activity_url,
+                checked_at=listing.activity_checked_at,
+            )
         if listing.provider != "kariyer":
             return JobBoardActivity(
                 state="unknown",
                 code="provider_not_checked",
                 checked_url=None,
             )
+
+        checked_at = datetime.now(timezone.utc)
 
         try:
             final_url, page_text = self._page_reader.read_page_text(
@@ -189,6 +214,7 @@ class JobBoardActivityVerifier:
                 state="unknown",
                 code="fetch_failed",
                 checked_url=None,
+                checked_at=checked_at,
             )
 
         try:
@@ -205,6 +231,7 @@ class JobBoardActivityVerifier:
                 state="unknown",
                 code="redirect_mismatch",
                 checked_url=None,
+                checked_at=checked_at,
             )
 
         if (
@@ -212,9 +239,10 @@ class JobBoardActivityVerifier:
             or final_listing.external_id != listing.external_id
         ):
             return JobBoardActivity(
-                state="unknown",
-                code="redirect_mismatch",
-                checked_url=None,
+                state="closed",
+                code="redirected_to_different_job",
+                checked_url=final_listing.listing_url,
+                checked_at=checked_at,
             )
 
         normalized_text = _marker_text(page_text)
@@ -226,12 +254,14 @@ class JobBoardActivityVerifier:
                 state="closed",
                 code="kariyer_closed_marker",
                 checked_url=final_listing.listing_url,
+                checked_at=checked_at,
             )
 
         return JobBoardActivity(
             state="unknown",
             code="no_closed_marker",
             checked_url=final_listing.listing_url,
+            checked_at=checked_at,
         )
 
 
@@ -343,6 +373,7 @@ def normalize_job_board_result(result: SearchResult) -> JobBoardListing:
     if not title:
         raise ValueError("Job title is invalid.")
     snippet = safe_text(result.snippet, 2_000) or None
+    metadata = extract_job_metadata(title, snippet)
     return JobBoardListing(
         provider=provider,
         external_id=external_id,
@@ -350,6 +381,19 @@ def normalize_job_board_result(result: SearchResult) -> JobBoardListing:
         title=title,
         snippet=snippet,
         search_position=result.position,
+        location=metadata.location,
+        work_mode=metadata.work_mode,
+        employment_type=metadata.employment_type,
+        published_at=metadata.published_at,
+        published_precision=metadata.published_precision,
+        activity_state=metadata.activity_state,
+        activity_code=metadata.activity_code,
+        activity_url=(
+            normalize_public_url(listing_url)
+            if metadata.activity_state != "unknown"
+            else None
+        ),
+        activity_checked_at=metadata.activity_checked_at,
     )
 
 
@@ -417,6 +461,7 @@ class JobBoardSearchConnector:
                     activity_state=activity.state,
                     activity_code=activity.code,
                     activity_url=activity.checked_url,
+                    activity_checked_at=activity.checked_at,
                 )
             listings.append(listing)
         return JobBoardSearch(

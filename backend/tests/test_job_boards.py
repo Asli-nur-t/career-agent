@@ -40,6 +40,7 @@ class JobBoardTests(unittest.TestCase):
         self.assertEqual(activity.state, "closed")
         self.assertEqual(activity.code, "kariyer_closed_marker")
         self.assertEqual(activity.checked_url, listing_url)
+        self.assertIsNotNone(activity.checked_at)
 
     def test_absence_of_closed_marker_does_not_imply_active(self) -> None:
         listing_url = (
@@ -54,8 +55,9 @@ class JobBoardTests(unittest.TestCase):
 
         self.assertEqual(activity.state, "unknown")
         self.assertEqual(activity.code, "no_closed_marker")
+        self.assertIsNotNone(activity.checked_at)
 
-    def test_activity_redirect_to_different_job_is_not_trusted(self) -> None:
+    def test_activity_redirect_to_different_job_is_closed(self) -> None:
         listing_url = (
             "https://www.kariyer.net/is-ilani/acme-ai-engineer-4034271"
         )
@@ -69,8 +71,9 @@ class JobBoardTests(unittest.TestCase):
 
         activity = JobBoardActivityVerifier(reader).check(listing)
 
-        self.assertEqual(activity.state, "unknown")
-        self.assertEqual(activity.code, "redirect_mismatch")
+        self.assertEqual(activity.state, "closed")
+        self.assertEqual(activity.code, "redirected_to_different_job")
+        self.assertIsNotNone(activity.checked_at)
 
     def test_supported_job_board_urls_are_canonicalized(self) -> None:
         cases = (
@@ -209,6 +212,25 @@ class JobBoardTests(unittest.TestCase):
                 ),
             )
         )
+
+    def test_search_result_metadata_is_attached_to_listing(self) -> None:
+        listing = normalize_job_board_result(
+            SearchResult(
+                title=(
+                    "Python Geliştirici - ABE Teknoloji — "
+                    "İstanbul, Türkiye - LinkedIn"
+                ),
+                url="https://www.linkedin.com/jobs/view/2765864334",
+                snippet="Hibrit · Tam Zamanlı · 2 gün önce",
+                position=1,
+            )
+        )
+
+        self.assertEqual(listing.location, "İstanbul, Türkiye")
+        self.assertEqual(listing.work_mode, "hybrid")
+        self.assertEqual(listing.employment_type, "full_time")
+        self.assertIsNotNone(listing.published_at)
+        self.assertEqual(listing.published_precision, "day")
 
 
 if __name__ == "__main__":

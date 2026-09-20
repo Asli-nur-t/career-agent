@@ -5,6 +5,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import (
@@ -16,7 +17,7 @@ from pydantic import (
 )
 
 
-MATCHER_VERSION = "rules-v2"
+MATCHER_VERSION = "rules-v3"
 _WHITESPACE = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 _TERM_TRANSLATIONS = (
@@ -122,6 +123,15 @@ class CandidateProfileSpec(BaseModel):
         default_factory=list,
         max_length=30,
     )
+    excluded_locations: list[str] = Field(
+        default_factory=list,
+        max_length=30,
+    )
+    allowed_work_modes: list[
+        str
+    ] = Field(default_factory=list, max_length=3)
+    location_filter_mode: str = "prefer"
+    max_listing_age_days: int = Field(default=30, ge=1, le=3650)
     excluded_keywords: list[str] = Field(
         default_factory=list,
         max_length=50,
@@ -134,6 +144,7 @@ class CandidateProfileSpec(BaseModel):
         "secondary_roles",
         "skills",
         "preferred_locations",
+        "excluded_locations",
         "excluded_keywords",
     )
     @classmethod
@@ -142,6 +153,22 @@ class CandidateProfileSpec(BaseModel):
         if not cleaned and values:
             raise ValueError("Terim listesi boş değerlerden oluşamaz.")
         return cleaned
+
+    @field_validator("allowed_work_modes")
+    @classmethod
+    def validate_work_modes(cls, values: list[str]) -> list[str]:
+        allowed = {"remote", "hybrid", "onsite"}
+        cleaned = _clean_unique(values, maximum=20)
+        if any(value not in allowed for value in cleaned):
+            raise ValueError("Çalışma biçimi desteklenmiyor.")
+        return cleaned
+
+    @field_validator("location_filter_mode")
+    @classmethod
+    def validate_location_filter_mode(cls, value: str) -> str:
+        if value not in {"prefer", "require"}:
+            raise ValueError("Konum filtresi prefer veya require olmalıdır.")
+        return value
 
     @model_validator(mode="after")
     def require_primary_terms(self) -> "CandidateProfileSpec":
@@ -158,9 +185,20 @@ class CandidateProfileSpec(BaseModel):
             "secondary_roles",
             "skills",
             "preferred_locations",
+            "excluded_locations",
+            "allowed_work_modes",
             "excluded_keywords",
         ):
             data[key] = sorted(data[key], key=normalize_match_text)
+        # Preserve hashes created before optional filtering fields existed.
+        if not data["excluded_locations"]:
+            data.pop("excluded_locations")
+        if not data["allowed_work_modes"]:
+            data.pop("allowed_work_modes")
+        if data["location_filter_mode"] == "prefer":
+            data.pop("location_filter_mode")
+        if data["max_listing_age_days"] == 30:
+            data.pop("max_listing_age_days")
         payload = json.dumps(
             data,
             ensure_ascii=False,
@@ -178,6 +216,8 @@ class JobMatchInput:
     department: str | None = None
     employment_type: str | None = None
     is_remote: bool | None = None
+    work_mode: str | None = None
+    published_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +255,8 @@ def _recommendation(score: int) -> str:
 def score_job(
     profile: CandidateProfileSpec,
     job: JobMatchInput,
+    *,
+    now: datetime | None = None,
 ) -> JobMatchResult:
     title = normalize_match_text(job.title)
     description = normalize_match_text(job.description_text)
@@ -233,6 +275,7 @@ def score_job(
     matched: list[str] = []
     risks: list[str] = []
     score = 0
+    hard_skip = False
 
     target_title = _first_match(title, profile.target_roles)
     target_description = _first_match(description, profile.target_roles)
@@ -261,16 +304,70 @@ def score_job(
     if not skill_matches:
         risks.append("skill_not_matched")
 
-    location_match = _first_match(metadata, profile.preferred_locations)
+    location_text = normalize_match_text(job.location)
+    location_match = _first_match(
+        location_text,
+        profile.preferred_locations,
+    )
+    excluded_location = _first_match(
+        location_text,
+        profile.excluded_locations,
+    )
+    work_mode = (job.work_mode or "").strip().casefold()
+    if work_mode not in {"remote", "hybrid", "onsite"}:
+        if job.is_remote is True:
+            work_mode = "remote"
+        elif job.is_remote is False:
+            work_mode = "onsite"
+        else:
+            work_mode = "unknown"
+
+    if excluded_location:
+        hard_skip = True
+        risks.append(f"excluded_location:{excluded_location}")
     if location_match:
         score += 10
         matched.append(f"location:{location_match}")
-    elif job.is_remote is True and profile.remote_allowed:
+    elif work_mode == "remote" and profile.remote_allowed:
         score += 10
         matched.append("location:remote")
-    elif job.is_remote is True and not profile.remote_allowed:
+    elif work_mode == "remote" and not profile.remote_allowed:
         score -= 20
         risks.append("remote_not_preferred")
+    elif location_text and profile.preferred_locations:
+        risks.append("location_not_preferred")
+        if profile.location_filter_mode == "require":
+            hard_skip = True
+    elif profile.preferred_locations:
+        risks.append("location_unknown")
+
+    if profile.allowed_work_modes:
+        if work_mode == "unknown":
+            risks.append("work_mode_unknown")
+        elif work_mode not in profile.allowed_work_modes:
+            hard_skip = True
+            risks.append(f"work_mode_not_allowed:{work_mode}")
+        else:
+            score += 5
+            matched.append(f"work_mode:{work_mode}")
+
+    if job.published_at is None:
+        risks.append("published_date_unknown")
+    else:
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        published = job.published_at
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        age_days = (reference - published).total_seconds() / 86_400
+        if age_days < -1:
+            risks.append("published_date_in_future")
+        elif age_days > profile.max_listing_age_days:
+            hard_skip = True
+            risks.append(f"stale_listing:{int(age_days)}_days")
+        else:
+            matched.append(f"listing_age:{max(0, int(age_days))}_days")
 
     junior_marker = _first_match(full_text, list(_JUNIOR_TERMS))
     if junior_marker:
@@ -300,8 +397,8 @@ def score_job(
         score -= 10
         risks.append("missing_description")
 
-    score = max(0, min(score, 100))
-    recommendation = _recommendation(score)
+    score = 0 if hard_skip else max(0, min(score, 100))
+    recommendation = "skip" if hard_skip else _recommendation(score)
     positives = ", ".join(matched[:8]) or "belirgin eşleşme yok"
     warnings = ", ".join(risks[:8]) or "kritik risk yok"
     reason = (

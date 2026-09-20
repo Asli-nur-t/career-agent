@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from sqlalchemy import Engine, and_, case, or_, select, tuple_
+from sqlalchemy import Engine, and_, case, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -242,8 +242,27 @@ def persist_job_board_candidates(
                         "state": item.activity_state,
                         "code": item.activity_code,
                         "url": item.activity_url or item.listing_url,
+                        "checked_at": (
+                            item.activity_checked_at.isoformat()
+                            if item.activity_checked_at
+                            else ""
+                        ),
                     }
                 )
+            evidence.append(
+                {
+                    "kind": "listing_metadata",
+                    "location": item.location or "",
+                    "work_mode": item.work_mode,
+                    "employment_type": item.employment_type,
+                    "published_at": (
+                        item.published_at.isoformat()
+                        if item.published_at
+                        else ""
+                    ),
+                    "published_precision": item.published_precision or "",
+                }
+            )
             values.append({
                 "id": uuid4(),
                 "company_id": company_id,
@@ -252,7 +271,13 @@ def persist_job_board_candidates(
                 "listing_url": item.listing_url,
                 "title": item.title,
                 "company_name_raw": company_name,
-                "location": None,
+                "location": item.location,
+                "work_mode": item.work_mode,
+                "employment_type": item.employment_type,
+                "published_at": item.published_at,
+                "activity_state": item.activity_state,
+                "activity_code": item.activity_code,
+                "activity_checked_at": item.activity_checked_at,
                 "snippet": item.snippet,
                 "status": (
                     "rejected"
@@ -293,12 +318,86 @@ def persist_job_board_candidates(
                     ),
                     else_=JobBoardCandidate.snippet,
                 ),
+                "location": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        func.coalesce(
+                            excluded.location,
+                            JobBoardCandidate.location,
+                        ),
+                    ),
+                    else_=JobBoardCandidate.location,
+                ),
+                "work_mode": case(
+                    (
+                        and_(
+                            JobBoardCandidate.status == "needs_review",
+                            excluded.work_mode != "unknown",
+                        ),
+                        excluded.work_mode,
+                    ),
+                    else_=JobBoardCandidate.work_mode,
+                ),
+                "employment_type": case(
+                    (
+                        and_(
+                            JobBoardCandidate.status == "needs_review",
+                            excluded.employment_type != "unknown",
+                        ),
+                        excluded.employment_type,
+                    ),
+                    else_=JobBoardCandidate.employment_type,
+                ),
+                "published_at": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        case(
+                            (
+                                JobBoardCandidate.published_at.is_(None),
+                                excluded.published_at,
+                            ),
+                            (
+                                excluded.published_at.is_(None),
+                                JobBoardCandidate.published_at,
+                            ),
+                            else_=func.least(
+                                JobBoardCandidate.published_at,
+                                excluded.published_at,
+                            ),
+                        ),
+                    ),
+                    else_=JobBoardCandidate.published_at,
+                ),
+                "activity_state": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.activity_state,
+                    ),
+                    else_=JobBoardCandidate.activity_state,
+                ),
+                "activity_code": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.activity_code,
+                    ),
+                    else_=JobBoardCandidate.activity_code,
+                ),
+                "activity_checked_at": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.activity_checked_at,
+                    ),
+                    else_=JobBoardCandidate.activity_checked_at,
+                ),
                 "status": case(
                     (newly_closed, "rejected"),
                     else_=JobBoardCandidate.status,
                 ),
                 "evidence": case(
-                    (newly_closed, excluded.evidence),
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.evidence,
+                    ),
                     else_=JobBoardCandidate.evidence,
                 ),
                 "last_seen_at": now,

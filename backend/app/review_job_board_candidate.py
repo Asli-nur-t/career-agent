@@ -62,10 +62,25 @@ def _candidate_content_hash(candidate: JobBoardCandidate) -> str:
         "title": candidate.title,
         "location": candidate.location,
         "department": None,
-        "employment_type": None,
+        "employment_type": (
+            None
+            if candidate.employment_type == "unknown"
+            else candidate.employment_type
+        ),
+        "work_mode": candidate.work_mode,
         "description_text": candidate.snippet,
-        "is_remote": None,
-        "published_at": None,
+        "is_remote": (
+            True
+            if candidate.work_mode == "remote"
+            else False
+            if candidate.work_mode == "onsite"
+            else None
+        ),
+        "published_at": (
+            candidate.published_at.isoformat()
+            if candidate.published_at
+            else None
+        ),
     }
     encoded = json.dumps(
         payload,
@@ -128,10 +143,21 @@ def review_job_board_candidate(
                     title=candidate.title,
                     location=candidate.location,
                     department=None,
-                    employment_type=None,
+                    employment_type=(
+                        None
+                        if candidate.employment_type == "unknown"
+                        else candidate.employment_type
+                    ),
                     description_text=candidate.snippet,
-                    is_remote=None,
-                    published_at=None,
+                    is_remote=(
+                        True
+                        if candidate.work_mode == "remote"
+                        else False
+                        if candidate.work_mode == "onsite"
+                        else None
+                    ),
+                    work_mode=candidate.work_mode,
+                    published_at=candidate.published_at,
                     content_hash=_candidate_content_hash(candidate),
                     status="active",
                     first_seen_at=now,

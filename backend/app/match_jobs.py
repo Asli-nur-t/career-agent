@@ -3,6 +3,7 @@
 import argparse
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Engine, and_, func, or_, select
@@ -31,6 +32,8 @@ class PendingJob:
     department: str | None
     employment_type: str | None
     is_remote: bool | None
+    work_mode: str
+    published_at: datetime | None
     content_hash: str
 
 
@@ -51,6 +54,10 @@ def _to_spec(profile: CandidateProfile) -> CandidateProfileSpec:
         secondary_roles=profile.secondary_roles,
         skills=profile.skills,
         preferred_locations=profile.preferred_locations,
+        excluded_locations=profile.excluded_locations,
+        allowed_work_modes=profile.allowed_work_modes,
+        location_filter_mode=profile.location_filter_mode,
+        max_listing_age_days=profile.max_listing_age_days,
         excluded_keywords=profile.excluded_keywords,
         max_years_experience=profile.max_years_experience,
         remote_allowed=profile.remote_allowed,
@@ -112,6 +119,8 @@ def select_pending_jobs(
                 department=posting.department,
                 employment_type=posting.employment_type,
                 is_remote=posting.is_remote,
+                work_mode=posting.work_mode,
+                published_at=posting.published_at,
                 content_hash=posting.content_hash,
             )
             for posting in postings
@@ -154,6 +163,8 @@ def persist_matches(
                     department=job.department,
                     employment_type=job.employment_type,
                     is_remote=job.is_remote,
+                    work_mode=job.work_mode,
+                    published_at=job.published_at,
                 ),
             )
             statement = insert(JobMatch).values(

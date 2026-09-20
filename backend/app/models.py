@@ -475,6 +475,10 @@ class JobPosting(Base):
             name="ck_job_postings_status",
         ),
         CheckConstraint(
+            "work_mode IN ('remote', 'hybrid', 'onsite', 'unknown')",
+            name="ck_job_postings_work_mode",
+        ),
+        CheckConstraint(
             "(status = 'active' AND closed_at IS NULL) OR "
             "(status = 'closed' AND closed_at IS NOT NULL)",
             name="ck_job_postings_closed_state",
@@ -520,6 +524,12 @@ class JobPosting(Base):
     employment_type: Mapped[str | None] = mapped_column(String(100))
     description_text: Mapped[str | None] = mapped_column(Text)
     is_remote: Mapped[bool | None] = mapped_column(Boolean)
+    work_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="unknown",
+        server_default="unknown",
+        nullable=False,
+    )
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
@@ -589,6 +599,24 @@ class JobBoardCandidate(Base):
             name="ck_job_board_candidates_status",
         ),
         CheckConstraint(
+            "work_mode IN ('remote', 'hybrid', 'onsite', 'unknown')",
+            name="ck_job_board_candidates_work_mode",
+        ),
+        CheckConstraint(
+            "employment_type IN "
+            "('full_time', 'part_time', 'contract', 'internship', "
+            "'temporary', 'unknown')",
+            name="ck_job_board_candidates_employment_type",
+        ),
+        CheckConstraint(
+            "activity_state IN ('active', 'closed', 'unknown')",
+            name="ck_job_board_candidates_activity_state",
+        ),
+        CheckConstraint(
+            "char_length(btrim(activity_code)) > 0",
+            name="ck_job_board_candidates_activity_code_not_blank",
+        ),
+        CheckConstraint(
             "status <> 'approved' OR company_id IS NOT NULL",
             name="ck_job_board_candidates_approval_company",
         ),
@@ -606,6 +634,11 @@ class JobBoardCandidate(Base):
             "ix_job_board_candidates_company_status",
             "company_id",
             "status",
+        ),
+        Index(
+            "ix_job_board_candidates_status_published",
+            "status",
+            "published_at",
         ),
     )
 
@@ -630,6 +663,36 @@ class JobBoardCandidate(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     company_name_raw: Mapped[str | None] = mapped_column(String(500))
     location: Mapped[str | None] = mapped_column(String(500))
+    work_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="unknown",
+        server_default="unknown",
+        nullable=False,
+    )
+    employment_type: Mapped[str] = mapped_column(
+        String(30),
+        default="unknown",
+        server_default="unknown",
+        nullable=False,
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    activity_state: Mapped[str] = mapped_column(
+        String(20),
+        default="unknown",
+        server_default="unknown",
+        nullable=False,
+    )
+    activity_code: Mapped[str] = mapped_column(
+        String(80),
+        default="not_checked",
+        server_default="not_checked",
+        nullable=False,
+    )
+    activity_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     snippet: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         String(30),
@@ -697,6 +760,22 @@ class CandidateProfile(Base):
             name="ck_candidate_profiles_locations_array",
         ),
         CheckConstraint(
+            "jsonb_typeof(excluded_locations) = 'array'",
+            name="ck_candidate_profiles_excluded_locations_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(allowed_work_modes) = 'array'",
+            name="ck_candidate_profiles_work_modes_array",
+        ),
+        CheckConstraint(
+            "location_filter_mode IN ('prefer', 'require')",
+            name="ck_candidate_profiles_location_filter_mode",
+        ),
+        CheckConstraint(
+            "max_listing_age_days BETWEEN 1 AND 3650",
+            name="ck_candidate_profiles_max_listing_age",
+        ),
+        CheckConstraint(
             "jsonb_typeof(excluded_keywords) = 'array'",
             name="ck_candidate_profiles_excluded_array",
         ),
@@ -734,6 +813,30 @@ class CandidateProfile(Base):
         JSONB,
         default=list,
         server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    excluded_locations: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    allowed_work_modes: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    location_filter_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="prefer",
+        server_default="prefer",
+        nullable=False,
+    )
+    max_listing_age_days: Mapped[int] = mapped_column(
+        Integer,
+        default=30,
+        server_default="30",
         nullable=False,
     )
     excluded_keywords: Mapped[list[str]] = mapped_column(
