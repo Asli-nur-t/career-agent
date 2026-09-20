@@ -44,6 +44,16 @@ class CompanyEvaluator(Protocol):
     def close(self) -> None: ...
 
 
+def company_assessment_output_schema() -> dict[str, object]:
+    """Require nullable fields to be emitted explicitly as null."""
+    schema = CompanyAssessment.model_json_schema()
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        raise RuntimeError("Company assessment schema is invalid.")
+    schema["required"] = list(properties)
+    return schema
+
+
 def _hostname_belongs_to(hostname: str, domain: str) -> bool:
     return hostname == domain or hostname.endswith(f".{domain}")
 
@@ -78,7 +88,7 @@ def build_evaluation_prompt(
     if not company_name or not 1 <= len(results) <= 10:
         raise ValueError("Evaluation input is invalid.")
 
-    schema = CompanyAssessment.model_json_schema()
+    schema = company_assessment_output_schema()
     result_data = [result.model_dump() for result in results]
 
     return f"""
@@ -100,9 +110,10 @@ Kurallar:
 - Ticari unvanın bir şirket sayfasında açıkça bulunması güçlü kanıttır.
 - Şirket farklı bir marka adı kullanıyorsa brand_name alanına yaz.
 - Kariyer sayfası açıkça görünmüyorsa null döndür.
-- Kesin olmayan eşleşmeyi needs_review olarak işaretle.
-- Hiç uygun aday yoksa not_found kullan.
-- not_found kullanıyorsan confidence alanı low olmalı.
+- candidate_found yalnızca official_website_candidate doluysa kullanılabilir.
+- Yalnızca sosyal ağ veya dizin kanıtı varsa needs_review kullan.
+- not_found kullanıyorsan tüm URL alanları null ve confidence low olmalı.
+- Nullable alanlar dahil şemadaki her alanı JSON çıktısına ekle.
 - Sadece geçerli JSON döndür. Markdown veya açıklama ekleme.
 
 JSON şeması:

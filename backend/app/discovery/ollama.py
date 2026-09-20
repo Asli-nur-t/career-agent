@@ -3,6 +3,7 @@ import httpx
 from app.discovery.evaluator import (
     EvaluationError,
     build_evaluation_prompt,
+    company_assessment_output_schema,
     parse_assessment,
 )
 from app.discovery.schemas import CompanyAssessment, SearchResult
@@ -72,7 +73,7 @@ class OllamaEvaluator:
         payload = {
             "model": self._model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "format": CompanyAssessment.model_json_schema(),
+            "format": company_assessment_output_schema(),
             "stream": False,
             "think": False,
             "options": {"temperature": 0},

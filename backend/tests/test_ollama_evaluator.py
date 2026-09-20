@@ -32,6 +32,10 @@ class OllamaEvaluatorTests(unittest.TestCase):
                 payload["format"]["additionalProperties"],
                 False,
             )
+            self.assertEqual(
+                set(payload["format"]["required"]),
+                set(payload["format"]["properties"]),
+            )
             assessment = {
                 "company_name": self.company_name,
                 "brand_name": "4ARC",
