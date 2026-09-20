@@ -8,13 +8,15 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from sqlalchemy import Engine, case, select, tuple_
+from sqlalchemy import Engine, and_, case, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.discovery.serper import SerperClient, SerperError
+from app.discovery.web_verifier import SafeWebsiteVerifier
 from app.job_boards import (
+    JobBoardActivityVerifier,
     JobBoardListing,
     JobBoardSearchConnector,
     build_job_board_query,
@@ -77,7 +79,11 @@ def persist_job_board_candidates(
     listings: tuple[JobBoardListing, ...],
 ) -> dict[str, int]:
     if not listings:
-        return {"new_candidates": 0, "refreshed_candidates": 0}
+        return {
+            "new_candidates": 0,
+            "refreshed_candidates": 0,
+            "auto_rejected_candidates": 0,
+        }
 
     unique_listings = {
         (item.provider, item.external_id): item
@@ -93,12 +99,13 @@ def persist_job_board_candidates(
         if current_name != company_name:
             raise ValueError("company_state_changed")
 
-        existing = {
-            (provider, external_id)
-            for provider, external_id in session.execute(
+        existing_statuses = {
+            (provider, external_id): status
+            for provider, external_id, status in session.execute(
                 select(
                     JobBoardCandidate.provider,
                     JobBoardCandidate.external_id,
+                    JobBoardCandidate.status,
                 ).where(
                     tuple_(
                         JobBoardCandidate.provider,
@@ -107,9 +114,29 @@ def persist_job_board_candidates(
                 )
             ).all()
         }
+        existing = set(existing_statuses)
 
-        values = [
-            {
+        values = []
+        for item in listings:
+            evidence = [
+                {
+                    "kind": "search_result",
+                    "query": query,
+                    "url": item.listing_url,
+                    "title": item.title,
+                    "position": str(item.search_position),
+                }
+            ]
+            if item.activity_code != "not_checked":
+                evidence.append(
+                    {
+                        "kind": "activity_check",
+                        "state": item.activity_state,
+                        "code": item.activity_code,
+                        "url": item.activity_url or item.listing_url,
+                    }
+                )
+            values.append({
                 "id": uuid4(),
                 "company_id": company_id,
                 "provider": item.provider,
@@ -119,23 +146,21 @@ def persist_job_board_candidates(
                 "company_name_raw": company_name,
                 "location": None,
                 "snippet": item.snippet,
-                "status": "needs_review",
-                "evidence": [
-                    {
-                        "kind": "search_result",
-                        "query": query,
-                        "url": item.listing_url,
-                        "title": item.title,
-                        "position": str(item.search_position),
-                    }
-                ],
+                "status": (
+                    "rejected"
+                    if item.activity_state == "closed"
+                    else "needs_review"
+                ),
+                "evidence": evidence,
                 "last_seen_at": now,
                 "updated_at": now,
-            }
-            for item in listings
-        ]
+            })
         statement = insert(JobBoardCandidate).values(values)
         excluded = statement.excluded
+        newly_closed = and_(
+            JobBoardCandidate.status == "needs_review",
+            excluded.status == "rejected",
+        )
         statement = statement.on_conflict_do_update(
             constraint="uq_job_board_candidates_provider_external_id",
             set_={
@@ -160,6 +185,14 @@ def persist_job_board_candidates(
                     ),
                     else_=JobBoardCandidate.snippet,
                 ),
+                "status": case(
+                    (newly_closed, "rejected"),
+                    else_=JobBoardCandidate.status,
+                ),
+                "evidence": case(
+                    (newly_closed, excluded.evidence),
+                    else_=JobBoardCandidate.evidence,
+                ),
                 "last_seen_at": now,
                 "updated_at": now,
             },
@@ -171,6 +204,13 @@ def persist_job_board_candidates(
     return {
         "new_candidates": len(keys) - refreshed,
         "refreshed_candidates": refreshed,
+        "auto_rejected_candidates": sum(
+            item.activity_state == "closed"
+            and existing_statuses.get(
+                (item.provider, item.external_id)
+            ) in {None, "needs_review"}
+            for item in listings
+        ),
     }
 
 
@@ -218,7 +258,17 @@ def main() -> None:
 
     try:
         with SerperClient(serper_key) as search_client:
-            discovery = JobBoardSearchConnector(search_client).search(
+            page_reader = SafeWebsiteVerifier(
+                timeout_seconds=8.0,
+                max_response_bytes=750_000,
+                max_redirects=2,
+                max_pages=1,
+            )
+            activity_verifier = JobBoardActivityVerifier(page_reader)
+            discovery = JobBoardSearchConnector(
+                search_client,
+                activity_verifier=activity_verifier,
+            ).search(
                 search_name,
                 max_results=args.max_results,
             )

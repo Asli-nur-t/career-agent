@@ -7,8 +7,9 @@ in a review queue.
 
 import hashlib
 import re
-from dataclasses import dataclass
-from typing import Protocol
+import unicodedata
+from dataclasses import dataclass, replace
+from typing import Literal, Protocol
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from app.discovery.safety import (
@@ -17,6 +18,7 @@ from app.discovery.safety import (
     safe_text,
 )
 from app.discovery.schemas import SearchResult
+from app.discovery.web_verifier import WebsiteVerificationError
 
 
 MAX_BOARD_RESULTS = 10
@@ -33,6 +35,10 @@ class SearchClient(Protocol):
     ) -> list[SearchResult]: ...
 
 
+class PublicPageReader(Protocol):
+    def read_page_text(self, url: str) -> tuple[str, str]: ...
+
+
 @dataclass(frozen=True)
 class JobBoardListing:
     provider: str
@@ -41,6 +47,16 @@ class JobBoardListing:
     title: str
     snippet: str | None
     search_position: int
+    activity_state: Literal["closed", "unknown"] = "unknown"
+    activity_code: str = "not_checked"
+    activity_url: str | None = None
+
+
+@dataclass(frozen=True)
+class JobBoardActivity:
+    state: Literal["closed", "unknown"]
+    code: str
+    checked_url: str | None
 
 
 @dataclass(frozen=True)
@@ -48,6 +64,94 @@ class JobBoardSearch:
     query: str
     raw_result_count: int
     listings: tuple[JobBoardListing, ...]
+
+
+_KARIYER_CLOSED_MARKERS = (
+    "this job posting is no longer accepting applications",
+    "bu is ilani artik basvuru kabul etmiyor",
+    "bu ilan artik basvuru kabul etmiyor",
+)
+
+
+def _marker_text(value: str) -> str:
+    value = value.replace("ı", "i").replace("İ", "I")
+    value = unicodedata.normalize("NFKD", value).casefold()
+    return " ".join(
+        "".join(
+            character if character.isalnum() else " "
+            for character in value
+            if not unicodedata.combining(character)
+        ).split()
+    )
+
+
+class JobBoardActivityVerifier:
+    """Detect explicit closure signals without inferring an active job."""
+
+    def __init__(self, page_reader: PublicPageReader) -> None:
+        self._page_reader = page_reader
+
+    def check(self, listing: JobBoardListing) -> JobBoardActivity:
+        if listing.provider != "kariyer":
+            return JobBoardActivity(
+                state="unknown",
+                code="provider_not_checked",
+                checked_url=None,
+            )
+
+        try:
+            final_url, page_text = self._page_reader.read_page_text(
+                listing.listing_url
+            )
+        except WebsiteVerificationError:
+            return JobBoardActivity(
+                state="unknown",
+                code="fetch_failed",
+                checked_url=None,
+            )
+
+        try:
+            final_listing = normalize_job_board_result(
+                SearchResult(
+                    title=listing.title,
+                    url=final_url,
+                    snippet=listing.snippet or "",
+                    position=listing.search_position,
+                )
+            )
+        except ValueError:
+            return JobBoardActivity(
+                state="unknown",
+                code="redirect_mismatch",
+                checked_url=None,
+            )
+
+        if (
+            final_listing.provider != listing.provider
+            or final_listing.external_id != listing.external_id
+        ):
+            return JobBoardActivity(
+                state="unknown",
+                code="redirect_mismatch",
+                checked_url=None,
+            )
+
+        normalized_text = _marker_text(page_text)
+        if any(
+            marker in normalized_text
+            for marker in _KARIYER_CLOSED_MARKERS
+        ):
+            return JobBoardActivity(
+                state="closed",
+                code="kariyer_closed_marker",
+                checked_url=final_listing.listing_url,
+            )
+
+        return JobBoardActivity(
+            state="unknown",
+            code="no_closed_marker",
+            checked_url=final_listing.listing_url,
+        )
 
 
 def _hostname_belongs_to(hostname: str, domain: str) -> bool:
@@ -186,8 +290,14 @@ def build_job_board_query(company_name: object) -> str:
 
 
 class JobBoardSearchConnector:
-    def __init__(self, search_client: SearchClient) -> None:
+    def __init__(
+        self,
+        search_client: SearchClient,
+        *,
+        activity_verifier: JobBoardActivityVerifier | None = None,
+    ) -> None:
         self._search_client = search_client
+        self._activity_verifier = activity_verifier
 
     def search(
         self,
@@ -213,6 +323,14 @@ class JobBoardSearchConnector:
             if key in seen:
                 continue
             seen.add(key)
+            if self._activity_verifier is not None:
+                activity = self._activity_verifier.check(listing)
+                listing = replace(
+                    listing,
+                    activity_state=activity.state,
+                    activity_code=activity.code,
+                    activity_url=activity.checked_url,
+                )
             listings.append(listing)
         return JobBoardSearch(
             query=query,

@@ -64,7 +64,7 @@ class JobBoardDiscoveryTests(unittest.TestCase):
             ),
         )
         existing_result = SimpleNamespace(
-            all=lambda: [("linkedin", "123456")]
+            all=lambda: [("linkedin", "123456", "needs_review")]
         )
         insert_result = SimpleNamespace()
 
@@ -105,7 +105,49 @@ class JobBoardDiscoveryTests(unittest.TestCase):
             )
         self.assertEqual(counts["new_candidates"], 0)
         self.assertEqual(counts["refreshed_candidates"], 0)
+        self.assertEqual(counts["auto_rejected_candidates"], 0)
         session_class.assert_not_called()
+
+    def test_explicitly_closed_candidate_is_stored_rejected(self) -> None:
+        company_id = uuid4()
+        listing_url = (
+            "https://www.kariyer.net/is-ilani/"
+            "acme-back-end-developer-4034270"
+        )
+        closed = JobBoardListing(
+            provider="kariyer",
+            external_id="4034270",
+            listing_url=listing_url,
+            title="Back End Developer",
+            snippet=None,
+            search_position=1,
+            activity_state="closed",
+            activity_code="kariyer_closed_marker",
+            activity_url=listing_url,
+        )
+        existing_result = SimpleNamespace(all=lambda: [])
+
+        with patch(
+            "app.discover_job_board_jobs.Session"
+        ) as session_class:
+            session = session_class.return_value.__enter__.return_value
+            session.scalar.return_value = "ACME"
+            session.execute.side_effect = [
+                existing_result,
+                SimpleNamespace(),
+            ]
+            counts = persist_job_board_candidates(
+                object(),
+                company_id=company_id,
+                company_name="ACME",
+                query='"ACME"',
+                listings=(closed,),
+            )
+
+        upsert = session.execute.call_args_list[1].args[0]
+        compiled = upsert.compile(dialect=postgresql.dialect())
+        self.assertIn("rejected", compiled.params.values())
+        self.assertEqual(counts["auto_rejected_candidates"], 1)
 
     def test_duplicate_candidate_keys_are_collapsed(self) -> None:
         company_id = uuid4()

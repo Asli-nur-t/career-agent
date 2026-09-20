@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+]

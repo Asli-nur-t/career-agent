@@ -284,6 +284,10 @@ class SafeWebsiteVerifier:
                 break
         return final_url, tuple(links)
 
+    def read_page_text(self, url: str) -> tuple[str, str]:
+        """Read visible text through the verifier's SSRF-safe fetch path."""
+        return self._fetch_text(url)
+
     def _fetch_text(self, initial_url: str) -> tuple[str, str]:
         current_url, media_type, decoded = self._fetch_document(initial_url)
         if media_type == "text/plain":

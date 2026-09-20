@@ -1,5 +1,20 @@
 # career-agent
 
+## Testler
+
+Geliştirme bağımlılıklarını bir kez kurun ve testleri pytest ile çalıştırın:
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+python -m pytest
+```
+
+Mevcut `unittest.TestCase` testleri pytest tarafından doğrudan toplanır; yeni
+testler pytest işlevleri ve fixture'larıyla yazılabilir. `main` dalına yapılan
+her push ve her pull request, Python 3.14 üzerinde derleme, test ve coverage
+raporunu GitHub Actions içinde otomatik çalıştırır. Workflow herhangi bir API
+anahtarı veya veritabanı parolası kullanmaz.
+
 ## Kariyer kaynaklarını keşfetme
 
 Önce `PYTHONPATH=backend python -m alembic upgrade head` komutunu çalıştırın.
@@ -76,10 +91,12 @@ denenir; beş ardışık hatada kaynak tekrar incelemeye alınır.
 ## Üçüncü taraf ilan platformları
 
 LinkedIn, Kariyer.net, Indeed ve Glassdoor sonuçları resmî şirket kariyer
-kaynaklarından ayrı tutulur. Sistem bu sitelerin giriş/CAPTCHA kontrollerini
-aşmaz ve sayfalarını otomatik olarak taramaz. Serper'ın herkese açık arama
-sonuçlarındaki izin verilen ilan URL biçimleri normalize edilerek
-`job_board_candidates` tablosuna yalnızca `needs_review` durumunda yazılır.
+kaynaklarından ayrı tutulur. Serper'ın herkese açık arama sonuçlarındaki izin
+verilen ilan URL biçimleri normalize edilir. Kariyer.net sonuçlarında herkese
+açık ilan sayfası, SSRF korumalı ve boyutu sınırlı istemciyle yalnızca açık
+kapanma mesajı için okunur. Kapanma mesajı doğrulanan kayıt `rejected`, belirsiz
+veya okunamayan kayıt `needs_review` durumunda yazılır. Mesajın bulunmaması
+ilanın aktif olduğu anlamına gelmez. Sistem giriş/CAPTCHA kontrollerini aşmaz.
 Bu kayıtlar onaylanmadan `job_postings` tablosuna veya başvuru akışına girmez.
 
 İlk aşamada kota kullanımını ve yanlış şirket eşleşmesini sınırlamak için arama

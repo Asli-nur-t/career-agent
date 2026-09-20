@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.discovery.schemas import SearchResult
 from app.job_boards import (
+    JobBoardActivityVerifier,
     JobBoardSearchConnector,
     build_job_board_query,
     normalize_job_board_result,
@@ -19,6 +20,56 @@ def result(url: str, position: int = 1) -> SearchResult:
 
 
 class JobBoardTests(unittest.TestCase):
+    def test_kariyer_closed_marker_is_detected(self) -> None:
+        listing_url = (
+            "https://www.kariyer.net/is-ilani/"
+            "acme-back-end-developer-4034270"
+        )
+        reader = SimpleNamespace(
+            read_page_text=lambda url: (
+                url,
+                "This job posting is no longer accepting applications.",
+            )
+        )
+        listing = normalize_job_board_result(result(listing_url))
+
+        activity = JobBoardActivityVerifier(reader).check(listing)
+
+        self.assertEqual(activity.state, "closed")
+        self.assertEqual(activity.code, "kariyer_closed_marker")
+        self.assertEqual(activity.checked_url, listing_url)
+
+    def test_absence_of_closed_marker_does_not_imply_active(self) -> None:
+        listing_url = (
+            "https://www.kariyer.net/is-ilani/acme-ai-engineer-4034271"
+        )
+        reader = SimpleNamespace(
+            read_page_text=lambda url: (url, "AI Engineer About Job")
+        )
+        listing = normalize_job_board_result(result(listing_url))
+
+        activity = JobBoardActivityVerifier(reader).check(listing)
+
+        self.assertEqual(activity.state, "unknown")
+        self.assertEqual(activity.code, "no_closed_marker")
+
+    def test_activity_redirect_to_different_job_is_not_trusted(self) -> None:
+        listing_url = (
+            "https://www.kariyer.net/is-ilani/acme-ai-engineer-4034271"
+        )
+        reader = SimpleNamespace(
+            read_page_text=lambda url: (
+                "https://www.kariyer.net/is-ilani/other-job-9999999",
+                "This job posting is no longer accepting applications.",
+            )
+        )
+        listing = normalize_job_board_result(result(listing_url))
+
+        activity = JobBoardActivityVerifier(reader).check(listing)
+
+        self.assertEqual(activity.state, "unknown")
+        self.assertEqual(activity.code, "redirect_mismatch")
+
     def test_supported_job_board_urls_are_canonicalized(self) -> None:
         cases = (
             (
