@@ -136,10 +136,29 @@ class CompanyWebProfile(Base):
             "career_sources_candidate_count BETWEEN 0 AND 100",
             name="ck_company_web_profiles_career_candidate_count",
         ),
+        CheckConstraint(
+            "job_boards_last_outcome IS NULL OR "
+            "job_boards_last_outcome IN "
+            "('candidates_found', 'no_results', 'error')",
+            name="ck_company_web_profiles_job_board_scan_outcome",
+        ),
+        CheckConstraint(
+            "job_boards_consecutive_failures BETWEEN 0 AND 1000",
+            name="ck_company_web_profiles_job_board_failure_count",
+        ),
+        CheckConstraint(
+            "job_boards_candidate_count BETWEEN 0 AND 100",
+            name="ck_company_web_profiles_job_board_candidate_count",
+        ),
         Index(
             "ix_company_web_profiles_career_scan_due",
             "status",
             "career_sources_next_check_at",
+        ),
+        Index(
+            "ix_company_web_profiles_job_board_scan_due",
+            "status",
+            "job_boards_next_check_at",
         ),
     )
 
@@ -203,6 +222,28 @@ class CompanyWebProfile(Base):
         nullable=False,
     )
     career_sources_candidate_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    job_boards_last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    job_boards_next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    job_boards_last_outcome: Mapped[str | None] = mapped_column(String(30))
+    job_boards_last_error_code: Mapped[str | None] = mapped_column(
+        String(80)
+    )
+    job_boards_consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    job_boards_candidate_count: Mapped[int] = mapped_column(
         Integer,
         default=0,
         server_default="0",

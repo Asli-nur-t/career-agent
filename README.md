@@ -152,6 +152,39 @@ engeller. Daha önce onaylanmış aday basit bir ret işlemiyle silinmez ya da
 kapatılmaz. Sonraki aramalar onaylanmış veya reddedilmiş kaydın incelenen URL,
 başlık ve özetini değiştiremez; yalnızca son görülme zamanını yeniler.
 
+Doğrulanmış şirketleri tek tek UUID ile çağırmak yerine, süresi gelen şirketleri
+toplu tarayın:
+
+```bash
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --dry-run \
+  --limit 10
+
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --limit 10 \
+  --max-results 10 \
+  --delay-seconds 3
+```
+
+Aday bulunan şirketler bir gün, sonuç bulunmayanlar yedi gün sonra tekrar
+taranır. Sağlayıcı hataları sınırlı geri çekilme süresiyle kaydedilir; kota veya
+kimlik doğrulama hatasında batch işlemi hemen durur. Böylece aynı şirket için
+gereksiz Serper sorguları yapılmaz.
+
+Bekleyen adayları özel aday profiline göre puanlanmış biçimde listelemek için:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_queue \
+  --profile aslinur-default \
+  --minimum-score 35 \
+  --limit 100
+```
+
+Bu komut kayıtları onaylamaz, reddetmez veya değiştirmez. Yalnızca manuel
+incelemede önce bakılacak ilanları öne çıkarır. Aktifliği tarayıcıda doğrulanan
+ilan yine `review_job_board_candidate --approve --confirmed-active` komutuyla
+onaylanır.
+
 ## Aday profili ve ilan eşleştirme
 
 Eşleştirme ilk aşamada harici model veya ücretli API çağırmaz. Hedef rol,
