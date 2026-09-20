@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from sqlalchemy import Engine, select, tuple_
+from sqlalchemy import Engine, case, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -139,9 +139,27 @@ def persist_job_board_candidates(
         statement = statement.on_conflict_do_update(
             constraint="uq_job_board_candidates_provider_external_id",
             set_={
-                "listing_url": excluded.listing_url,
-                "title": excluded.title,
-                "snippet": excluded.snippet,
+                "listing_url": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.listing_url,
+                    ),
+                    else_=JobBoardCandidate.listing_url,
+                ),
+                "title": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.title,
+                    ),
+                    else_=JobBoardCandidate.title,
+                ),
+                "snippet": case(
+                    (
+                        JobBoardCandidate.status == "needs_review",
+                        excluded.snippet,
+                    ),
+                    else_=JobBoardCandidate.snippet,
+                ),
                 "last_seen_at": now,
                 "updated_at": now,
             },

@@ -104,3 +104,33 @@ atılır ve aynı platformdaki aynı ilan tekrar eklenmez. Arama başlığı ve 
 güvenilmeyen dış veri kabul edilir. Adayın mevcut şirket kaydı değişmişse işlem
 transaction içinde durdurulur. Şirket birleştirmelerinde aday kayıtlarının yeni
 şirket kimliğine taşınması zorunludur.
+
+### İlan adayını inceleme
+
+Önce `needs_review` kaydının URL'sini tarayıcıda elle açın ve ilanın doğru
+şirkete ait, erişilebilir ve hâlâ aktif olduğunu kontrol edin. Aktifliği
+doğrulanan aday tek transaction içinde onaylanır ve `job_postings` tablosuna
+aktarılır:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --approve \
+  --confirmed-active
+```
+
+Yanlış şirkete ait, kapanmış veya şüpheli adaylar reddedilir:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --reject
+```
+
+Onay sırasında URL tekrar allowlist ve kanıt doğrulamasından geçirilir. Bir
+adayın tam olarak bir `job_postings` kaydı olabilir. ATS ilanları
+`career_source_id`, üçüncü taraf platform ilanları `job_board_candidate_id`
+üzerinden bağlanır; veritabanı ikisinin aynı anda dolu veya boş olmasını
+engeller. Daha önce onaylanmış aday basit bir ret işlemiyle silinmez ya da
+kapatılmaz. Sonraki aramalar onaylanmış veya reddedilmiş kaydın incelenen URL,
+başlık ve özetini değiştiremez; yalnızca son görülme zamanını yeniler.

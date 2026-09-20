@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from sqlalchemy.dialects import postgresql
+
 from app.discover_job_board_jobs import (
     company_for_search,
     persist_job_board_candidates,
@@ -83,6 +85,11 @@ class JobBoardDiscoveryTests(unittest.TestCase):
         self.assertEqual(counts["new_candidates"], 1)
         self.assertEqual(counts["refreshed_candidates"], 1)
         self.assertEqual(session.execute.call_count, 2)
+        upsert = session.execute.call_args_list[1].args[0]
+        compiled = upsert.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        self.assertIn("CASE WHEN", sql)
+        self.assertIn("needs_review", compiled.params.values())
         session.commit.assert_called_once()
 
     def test_empty_candidate_set_does_not_open_transaction(self) -> None:

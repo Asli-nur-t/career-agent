@@ -409,6 +409,10 @@ class JobPosting(Base):
             "external_id",
             name="uq_job_postings_source_external_id",
         ),
+        UniqueConstraint(
+            "job_board_candidate_id",
+            name="uq_job_postings_job_board_candidate",
+        ),
         CheckConstraint(
             "char_length(btrim(external_id)) > 0",
             name="ck_job_postings_external_id_not_blank",
@@ -434,6 +438,13 @@ class JobPosting(Base):
             "(status = 'closed' AND closed_at IS NOT NULL)",
             name="ck_job_postings_closed_state",
         ),
+        CheckConstraint(
+            "(career_source_id IS NOT NULL AND "
+            "job_board_candidate_id IS NULL) OR "
+            "(career_source_id IS NULL AND "
+            "job_board_candidate_id IS NOT NULL)",
+            name="ck_job_postings_exactly_one_source",
+        ),
         Index(
             "ix_job_postings_source_status",
             "career_source_id",
@@ -451,10 +462,13 @@ class JobPosting(Base):
         primary_key=True,
         default=uuid4,
     )
-    career_source_id: Mapped[UUID] = mapped_column(
+    career_source_id: Mapped[UUID | None] = mapped_column(
         Uuid,
         ForeignKey("career_sources.id", ondelete="CASCADE"),
-        nullable=False,
+    )
+    job_board_candidate_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_board_candidates.id", ondelete="RESTRICT"),
     )
     external_id: Mapped[str] = mapped_column(String(500), nullable=False)
     job_url: Mapped[str] = mapped_column(String(2048), nullable=False)
