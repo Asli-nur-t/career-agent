@@ -17,12 +17,23 @@ DENIED_OFFICIAL_WEBSITE_DOMAINS = {
     "crunchbase.com",
     "facebook.com",
     "instagram.com",
+    "indeed.com",
+    "kariyer.net",
     "linkedin.com",
     "play.google.com",
     "rocketreach.co",
     "twitter.com",
     "x.com",
     "youtube.com",
+}
+ALLOWED_EXTERNAL_CAREERS_DOMAINS = {
+    "ashbyhq.com",
+    "greenhouse.io",
+    "lever.co",
+    "recruitee.com",
+    "smartrecruiters.com",
+    "teamtailor.com",
+    "workable.com",
 }
 
 
@@ -71,6 +82,30 @@ def _is_linkedin_url(url: str) -> bool:
     return _hostname_belongs_to(hostname, "linkedin.com")
 
 
+def _without_www(hostname: str) -> str:
+    return hostname[4:] if hostname.startswith("www.") else hostname
+
+
+def _is_allowed_careers_url(website: str, careers: str) -> bool:
+    website_host = _without_www(
+        (urlsplit(website).hostname or "").lower()
+    )
+    careers_host = _without_www(
+        (urlsplit(careers).hostname or "").lower()
+    )
+    same_company_domain = (
+        careers_host == website_host
+        or careers_host.endswith(f".{website_host}")
+    )
+    external_ats = any(
+        _hostname_belongs_to(careers_host, domain)
+        for domain in ALLOWED_EXTERNAL_CAREERS_DOMAINS
+    )
+    return bool(website_host and careers_host) and (
+        same_company_domain or external_ats
+    )
+
+
 def _remove_json_fence(value: str) -> str:
     value = value.strip()
     if value.startswith("```") and value.endswith("```"):
@@ -109,7 +144,11 @@ Kurallar:
 - Bunlar yalnızca destekleyici kanıt olabilir.
 - Ticari unvanın bir şirket sayfasında açıkça bulunması güçlü kanıttır.
 - Şirket farklı bir marka adı kullanıyorsa brand_name alanına yaz.
-- Kariyer sayfası açıkça görünmüyorsa null döndür.
+- careers_url_candidate yalnızca şirketin kendi alan adındaki bir kariyer
+  sayfası veya Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee,
+  Workable ya da Teamtailor şirket panosu olabilir.
+- Kariyer.net, LinkedIn, Indeed ve benzeri ilan/dizin sayfalarını şirketin
+  kariyer sayfası kabul etme; careers_url_candidate alanını null döndür.
 - candidate_found yalnızca official_website_candidate doluysa kullanılabilir.
 - Yalnızca sosyal ağ veya dizin kanıtı varsa needs_review kullan.
 - not_found kullanıyorsan tüm URL alanları null ve confidence low olmalı.
@@ -177,6 +216,21 @@ def validate_assessment(
         raise EvaluationError("invalid_linkedin_domain")
     if careers and not website:
         raise EvaluationError("careers_without_website")
+    if careers and website and not _is_allowed_careers_url(
+        str(website),
+        str(careers),
+    ):
+        normalized_updates["careers_url_candidate"] = None
+        normalized_updates["evidence"] = [
+            item
+            for item in assessment.evidence
+            if str(careers) not in item
+        ]
+        normalized_updates["reason"] = (
+            "Resmî web sitesi adayı arama sonuçlarıyla eşleşti. "
+            "Harici iş ilanı bağlantısı resmî kariyer sayfası "
+            "olarak kabul edilmedi."
+        )
     if assessment.status == "candidate_found" and not website:
         raise EvaluationError("candidate_without_website")
     if assessment.status == "not_found" and any(

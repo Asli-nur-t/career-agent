@@ -3,7 +3,8 @@ import unittest
 
 import httpx
 
-from app.discovery.evaluator import EvaluationError
+from app.discovery.evaluator import EvaluationError, validate_assessment
+from app.discovery.schemas import CompanyAssessment
 from app.discovery.ollama import OllamaEvaluator
 from app.discovery.schemas import SearchResult
 
@@ -145,6 +146,101 @@ class OllamaEvaluatorTests(unittest.TestCase):
             "sensitive provider detail",
             str(raised.exception),
         )
+
+    def test_job_board_listing_is_not_a_careers_page(self) -> None:
+        job_url = "https://www.kariyer.net/is-ilani/4arc-123"
+        results = [
+            *self.results,
+            SearchResult(
+                title="4ARC İş İlanı",
+                url=job_url,
+                snippet="Tekil ilan",
+                position=2,
+            ),
+        ]
+        assessment = CompanyAssessment(
+            company_name=self.company_name,
+            brand_name="4ARC",
+            official_website_candidate="https://www.4arctech.com/",
+            careers_url_candidate=job_url,
+            official_linkedin_candidate=None,
+            confidence="high",
+            status="candidate_found",
+            evidence=["https://www.4arctech.com/", job_url],
+            reason="Kariyer sayfası bulundu.",
+        )
+
+        validated = validate_assessment(
+            self.company_name,
+            results,
+            assessment,
+        )
+
+        self.assertIsNone(validated.careers_url_candidate)
+        self.assertNotIn(job_url, validated.evidence)
+        self.assertIn("kabul edilmedi", validated.reason)
+
+    def test_allowlisted_external_ats_is_kept(self) -> None:
+        ats_url = "https://jobs.ashbyhq.com/4arc"
+        results = [
+            *self.results,
+            SearchResult(
+                title="4ARC Jobs",
+                url=ats_url,
+                snippet="4ARC open roles",
+                position=2,
+            ),
+        ]
+        assessment = CompanyAssessment(
+            company_name=self.company_name,
+            brand_name="4ARC",
+            official_website_candidate="https://www.4arctech.com/",
+            careers_url_candidate=ats_url,
+            official_linkedin_candidate=None,
+            confidence="high",
+            status="candidate_found",
+            evidence=[ats_url],
+            reason="Şirket panosu bulundu.",
+        )
+
+        validated = validate_assessment(
+            self.company_name,
+            results,
+            assessment,
+        )
+
+        self.assertEqual(validated.careers_url_candidate, ats_url)
+
+    def test_company_careers_subdomain_is_kept(self) -> None:
+        careers_url = "https://careers.4arctech.com/jobs"
+        results = [
+            *self.results,
+            SearchResult(
+                title="4ARC Careers",
+                url=careers_url,
+                snippet="4ARC open roles",
+                position=2,
+            ),
+        ]
+        assessment = CompanyAssessment(
+            company_name=self.company_name,
+            brand_name="4ARC",
+            official_website_candidate="https://www.4arctech.com/",
+            careers_url_candidate=careers_url,
+            official_linkedin_candidate=None,
+            confidence="high",
+            status="candidate_found",
+            evidence=[careers_url],
+            reason="Şirket kariyer sayfası bulundu.",
+        )
+
+        validated = validate_assessment(
+            self.company_name,
+            results,
+            assessment,
+        )
+
+        self.assertEqual(validated.careers_url_candidate, careers_url)
 
 
 if __name__ == "__main__":
