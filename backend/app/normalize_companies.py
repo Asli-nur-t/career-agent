@@ -16,6 +16,7 @@ from app.models import (
     CompanyAffiliation,
     CompanyWebProfile,
     DiscoveryAttempt,
+    JobBoardCandidate,
 )
 
 
@@ -289,6 +290,13 @@ def merge_group(
             update(DiscoveryAttempt)
             .where(
                 DiscoveryAttempt.company_id.in_(duplicate_ids)
+            )
+            .values(company_id=survivor.id)
+        )
+        session.execute(
+            update(JobBoardCandidate)
+            .where(
+                JobBoardCandidate.company_id.in_(duplicate_ids)
             )
             .values(company_id=survivor.id)
         )

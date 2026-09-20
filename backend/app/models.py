@@ -496,3 +496,118 @@ class JobPosting(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class JobBoardCandidate(Base):
+    __tablename__ = "job_board_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_id",
+            name="uq_job_board_candidates_provider_external_id",
+        ),
+        CheckConstraint(
+            "provider IN "
+            "('linkedin', 'kariyer', 'indeed', 'glassdoor')",
+            name="ck_job_board_candidates_provider",
+        ),
+        CheckConstraint(
+            "char_length(btrim(external_id)) > 0",
+            name="ck_job_board_candidates_external_id_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(btrim(listing_url)) > 0",
+            name="ck_job_board_candidates_url_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(btrim(title)) > 0",
+            name="ck_job_board_candidates_title_not_blank",
+        ),
+        CheckConstraint(
+            "company_id IS NOT NULL OR (company_name_raw IS NOT NULL AND "
+            "char_length(btrim(company_name_raw)) > 0)",
+            name="ck_job_board_candidates_company_identity",
+        ),
+        CheckConstraint(
+            "status IN ('needs_review', 'approved', 'rejected')",
+            name="ck_job_board_candidates_status",
+        ),
+        CheckConstraint(
+            "status <> 'approved' OR company_id IS NOT NULL",
+            name="ck_job_board_candidates_approval_company",
+        ),
+        CheckConstraint(
+            "(status = 'approved' AND approved_at IS NOT NULL) OR "
+            "(status <> 'approved' AND approved_at IS NULL)",
+            name="ck_job_board_candidates_approval_time",
+        ),
+        Index(
+            "ix_job_board_candidates_status_last_seen",
+            "status",
+            "last_seen_at",
+        ),
+        Index(
+            "ix_job_board_candidates_company_status",
+            "company_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+    company_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("companies.id", ondelete="RESTRICT"),
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    external_id: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+    listing_url: Mapped[str] = mapped_column(
+        String(2048),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    company_name_raw: Mapped[str | None] = mapped_column(String(500))
+    location: Mapped[str | None] = mapped_column(String(500))
+    snippet: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        default="needs_review",
+        server_default="needs_review",
+        nullable=False,
+    )
+    evidence: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

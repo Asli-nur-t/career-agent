@@ -72,3 +72,35 @@ PYTHONPATH=backend python -m app.ingest_jobs --limit 3 --delay-seconds 3
 Başarılı tam okumada yeni ilanlar eklenir, değişenler güncellenir ve artık
 kaynakta görünmeyenler `closed` yapılır. Hatalar artan bekleme süresiyle yeniden
 denenir; beş ardışık hatada kaynak tekrar incelemeye alınır.
+
+## Üçüncü taraf ilan platformları
+
+LinkedIn, Kariyer.net, Indeed ve Glassdoor sonuçları resmî şirket kariyer
+kaynaklarından ayrı tutulur. Sistem bu sitelerin giriş/CAPTCHA kontrollerini
+aşmaz ve sayfalarını otomatik olarak taramaz. Serper'ın herkese açık arama
+sonuçlarındaki izin verilen ilan URL biçimleri normalize edilerek
+`job_board_candidates` tablosuna yalnızca `needs_review` durumunda yazılır.
+Bu kayıtlar onaylanmadan `job_postings` tablosuna veya başvuru akışına girmez.
+
+İlk aşamada kota kullanımını ve yanlış şirket eşleşmesini sınırlamak için arama
+tek bir açık şirket kimliğiyle çalışır:
+
+```bash
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --company-id UUID \
+  --dry-run
+
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --company-id UUID \
+  --max-results 10
+```
+
+Şirket profili web içeriğiyle doğrulanmış ve bir marka adı kaydedilmişse arama
+ticari unvan yerine bu marka adıyla yapılır. Doğrulanmamış profillerde CSV'den
+gelen şirket adı korunur.
+
+URL alan adları ve ilan yolu allowlist ile doğrulanır; takip parametreleri
+atılır ve aynı platformdaki aynı ilan tekrar eklenmez. Arama başlığı ve özeti
+güvenilmeyen dış veri kabul edilir. Adayın mevcut şirket kaydı değişmişse işlem
+transaction içinde durdurulur. Şirket birleştirmelerinde aday kayıtlarının yeni
+şirket kimliğine taşınması zorunludur.
