@@ -625,3 +625,213 @@ class JobBoardCandidate(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class CandidateProfile(Base):
+    __tablename__ = "candidate_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(btrim(label)) > 0",
+            name="ck_candidate_profiles_label_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(config_hash) = 64",
+            name="ck_candidate_profiles_hash_length",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(target_roles) = 'array'",
+            name="ck_candidate_profiles_target_roles_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(secondary_roles) = 'array'",
+            name="ck_candidate_profiles_secondary_roles_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(skills) = 'array'",
+            name="ck_candidate_profiles_skills_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(preferred_locations) = 'array'",
+            name="ck_candidate_profiles_locations_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(excluded_keywords) = 'array'",
+            name="ck_candidate_profiles_excluded_array",
+        ),
+        CheckConstraint(
+            "max_years_experience BETWEEN 0 AND 50",
+            name="ck_candidate_profiles_max_experience",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+    label: Mapped[str] = mapped_column(
+        String(100),
+        unique=True,
+        nullable=False,
+    )
+    target_roles: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    secondary_roles: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    skills: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    preferred_locations: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    excluded_keywords: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    max_years_experience: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
+        server_default="3",
+        nullable=False,
+    )
+    remote_allowed: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=text("true"),
+        nullable=False,
+    )
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class JobMatch(Base):
+    __tablename__ = "job_matches"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "job_posting_id",
+            name="uq_job_matches_profile_posting",
+        ),
+        CheckConstraint(
+            "score BETWEEN 0 AND 100",
+            name="ck_job_matches_score",
+        ),
+        CheckConstraint(
+            "recommendation IN "
+            "('strong_apply', 'apply', 'review', 'skip')",
+            name="ck_job_matches_recommendation",
+        ),
+        CheckConstraint(
+            "review_status IN "
+            "('new', 'shortlisted', 'dismissed', 'applied')",
+            name="ck_job_matches_review_status",
+        ),
+        CheckConstraint(
+            "char_length(job_content_hash) = 64",
+            name="ck_job_matches_job_hash_length",
+        ),
+        CheckConstraint(
+            "char_length(profile_hash) = 64",
+            name="ck_job_matches_profile_hash_length",
+        ),
+        CheckConstraint(
+            "char_length(btrim(reason)) > 0",
+            name="ck_job_matches_reason_not_blank",
+        ),
+        CheckConstraint(
+            "char_length(btrim(matcher_version)) > 0",
+            name="ck_job_matches_version_not_blank",
+        ),
+        Index(
+            "ix_job_matches_profile_recommendation_score",
+            "profile_id",
+            "recommendation",
+            "score",
+        ),
+        Index(
+            "ix_job_matches_review_status_score",
+            "review_status",
+            "score",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+    profile_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    job_posting_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_postings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    recommendation: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )
+    review_status: Mapped[str] = mapped_column(
+        String(30),
+        default="new",
+        server_default="new",
+        nullable=False,
+    )
+    matched_terms: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    risk_flags: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    matcher_version: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    job_content_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    profile_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

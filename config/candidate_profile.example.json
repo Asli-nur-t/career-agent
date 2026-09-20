@@ -1,0 +1,49 @@
+{
+  "label": "aslinur-default",
+  "target_roles": [
+    "AI Engineer",
+    "Machine Learning Engineer",
+    "ML Engineer",
+    "GenAI Engineer",
+    "RAG Engineer",
+    "NLP Engineer",
+    "Data Scientist"
+  ],
+  "secondary_roles": [
+    "Software Engineer",
+    "Backend Engineer",
+    "Python Developer",
+    ".NET Developer",
+    "Research Engineer"
+  ],
+  "skills": [
+    "Python",
+    "RAG",
+    "LLM",
+    "NLP",
+    "FAISS",
+    "PyTorch",
+    "Docker",
+    "PostgreSQL",
+    "FastAPI",
+    "ASP.NET Core",
+    "C#",
+    "LangGraph"
+  ],
+  "preferred_locations": [
+    "İstanbul",
+    "Kocaeli",
+    "Türkiye",
+    "Remote",
+    "Hybrid"
+  ],
+  "excluded_keywords": [
+    "sales",
+    "marketing",
+    "embedded",
+    "firmware",
+    "hardware design"
+  ],
+  "max_years_experience": 3,
+  "remote_allowed": true
+}

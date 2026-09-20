@@ -151,3 +151,42 @@ adayın tam olarak bir `job_postings` kaydı olabilir. ATS ilanları
 engeller. Daha önce onaylanmış aday basit bir ret işlemiyle silinmez ya da
 kapatılmaz. Sonraki aramalar onaylanmış veya reddedilmiş kaydın incelenen URL,
 başlık ve özetini değiştiremez; yalnızca son görülme zamanını yeniler.
+
+## Aday profili ve ilan eşleştirme
+
+Eşleştirme ilk aşamada harici model veya ücretli API çağırmaz. Hedef rol,
+beceri, konum, uzaktan çalışma, kıdem, deneyim şartı ve hariç tutulan terimleri
+kullanarak etkin ilanlara açıklanabilir bir 0-100 puan verir. Sonuçlar
+`job_matches` tablosunda `strong_apply`, `apply`, `review` veya `skip` olarak
+saklanır.
+
+Örnek profili özel alana kopyalayıp düzenleyin; `private/` Git tarafından
+yok sayılır:
+
+```bash
+cp config/candidate_profile.example.json private/candidate_profile.json
+
+PYTHONPATH=backend python -m alembic upgrade head
+
+PYTHONPATH=backend python -m app.configure_candidate_profile \
+  --file private/candidate_profile.json
+```
+
+Önce yeniden puanlanması gereken ilanları görün, sonra eşleştirmeyi çalıştırın:
+
+```bash
+PYTHONPATH=backend python -m app.match_jobs \
+  --profile aslinur-default \
+  --dry-run \
+  --limit 100
+
+PYTHONPATH=backend python -m app.match_jobs \
+  --profile aslinur-default \
+  --limit 100
+```
+
+İlan içeriği, profil veya eşleştirici sürümü değişmedikçe kayıt tekrar
+hesaplanmaz. `--refresh` bütün etkin ilanları yeniden puanlar. Yeniden puanlama
+`shortlisted`, `dismissed` ve `applied` gibi insan inceleme kararlarını
+değiştirmez. Bu puan bir başvuru kararı değildir; sonraki yerel model aşamasına
+gidecek küçük aday kümesini maliyetsiz biçimde daraltır.
