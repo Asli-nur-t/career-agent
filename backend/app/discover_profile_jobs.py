@@ -365,7 +365,11 @@ def persist_profile_candidates(
     candidates: tuple[ProfileJobCandidate, ...],
 ) -> dict[str, int]:
     if not candidates:
-        return {"new_candidates": 0, "refreshed_candidates": 0}
+        return {
+            "new_candidates": 0,
+            "refreshed_candidates": 0,
+            "suppressed_candidates": 0,
+        }
     unique = {
         (item.listing.provider, item.listing.external_id): item
         for item in candidates
@@ -376,12 +380,13 @@ def persist_profile_candidates(
         profile = session.get(CandidateProfile, profile_id)
         if profile is None or profile.config_hash != profile_hash:
             raise ValueError("profile_state_changed")
-        existing = {
-            (provider, external_id)
-            for provider, external_id in session.execute(
+        existing_statuses = {
+            (provider, external_id): status
+            for provider, external_id, status in session.execute(
                 select(
                     JobBoardCandidate.provider,
                     JobBoardCandidate.external_id,
+                    JobBoardCandidate.status,
                 ).where(
                     tuple_(
                         JobBoardCandidate.provider,
@@ -535,10 +540,15 @@ def persist_profile_candidates(
         )
         session.execute(statement)
         session.commit()
-    refreshed = len(existing)
+    new_count = sum(key not in existing_statuses for key in keys)
+    refreshed = sum(
+        existing_statuses.get(key) == "needs_review" for key in keys
+    )
+    suppressed = len(keys) - new_count - refreshed
     return {
-        "new_candidates": len(keys) - refreshed,
+        "new_candidates": new_count,
         "refreshed_candidates": refreshed,
+        "suppressed_candidates": suppressed,
     }
 
 
@@ -806,6 +816,10 @@ def main() -> None:
             profile_hash=profile_hash,
             candidates=discovery.candidates,
         )
+        actionable_candidate_count = (
+            persisted["new_candidates"]
+            + persisted["refreshed_candidates"]
+        )
         reconciled_count = reconcile_profile_candidates(
             engine,
             profile_id=state.profile_id,
@@ -816,7 +830,7 @@ def main() -> None:
             engine,
             profile_id=state.profile_id,
             profile_hash=profile_hash,
-            candidate_count=len(discovery.candidates),
+            candidate_count=actionable_candidate_count,
         )
     except SerperError as error:
         try:
@@ -858,7 +872,8 @@ def main() -> None:
                     }
                     for item in discovery.query_stats
                 ],
-                "candidate_count": len(discovery.candidates),
+                "matched_candidate_count": len(discovery.candidates),
+                "candidate_count": actionable_candidate_count,
                 "reconciled_candidate_count": reconciled_count,
                 **persisted,
             },

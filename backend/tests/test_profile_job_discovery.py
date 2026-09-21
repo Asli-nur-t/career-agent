@@ -261,11 +261,57 @@ def test_profile_candidates_are_review_only_and_company_optional() -> None:
 
     statement = session.execute.call_args_list[1].args[0]
     compiled = statement.compile(dialect=postgresql.dialect())
-    assert result == {"new_candidates": 1, "refreshed_candidates": 0}
+    assert result == {
+        "new_candidates": 1,
+        "refreshed_candidates": 0,
+        "suppressed_candidates": 0,
+    }
     assert "ON CONFLICT" in str(compiled)
     assert "needs_review" in compiled.params.values()
     assert "New Employer" in compiled.params.values()
     assert None in compiled.params.values()
+    session.commit.assert_called_once()
+
+
+def test_terminal_profile_candidate_is_counted_as_suppressed() -> None:
+    profile_id = uuid4()
+    profile_hash = "e" * 64
+    item = ProfileJobCandidate(
+        query='("Software Engineer") site:linkedin.com/jobs/view',
+        listing=JobBoardListing(
+            provider="linkedin",
+            external_id="4466255577",
+            listing_url="https://www.linkedin.com/jobs/view/4466255577",
+            title="Junior Software Engineer - Vega Networks",
+            snippet="İstanbul",
+            search_position=1,
+            company_name_raw="Vega Networks",
+            location="İstanbul, Türkiye",
+        ),
+        score=35,
+        recommendation="review",
+        matched_terms=("secondary_role:Software Engineer",),
+        risk_flags=(),
+    )
+    existing_result = SimpleNamespace(
+        all=lambda: [("linkedin", "4466255577", "rejected")]
+    )
+    with patch("app.discover_profile_jobs.Session") as session_class:
+        session = session_class.return_value.__enter__.return_value
+        session.get.return_value = SimpleNamespace(config_hash=profile_hash)
+        session.execute.side_effect = [existing_result, SimpleNamespace()]
+        result = persist_profile_candidates(
+            object(),
+            profile_id=profile_id,
+            profile_hash=profile_hash,
+            candidates=(item,),
+        )
+
+    assert result == {
+        "new_candidates": 0,
+        "refreshed_candidates": 0,
+        "suppressed_candidates": 1,
+    }
     session.commit.assert_called_once()
 
 

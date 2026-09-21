@@ -268,6 +268,10 @@ zorunlu konum filtresinde konumu bilinmeyen ilanlar ve tercih edilen uzaktan
 uzaktan çalışma kapsamları ancak profilin `preferred_remote_locations`
 alanında açıkça listelenirse kabul edilir. Desteklenen URL'leri normalize eder,
 yinelenen ilanları tekilleştirir ve rol eşleşmesi olmayan sonuçları kaydetmeden eler.
+`matched_candidate_count` aramada profile uyan sonuç sayısını,
+`candidate_count` ise gerçekten yeni veya bekleyen kaydı yenileyen aday
+sayısını gösterir. Daha önce onaylanmış, reddedilmiş ya da filtrelenmiş terminal
+kayıtlar yeniden açılmaz ve `suppressed_candidates` altında ayrıca sayılır.
 Varsayılan olarak en fazla altı Serper sorgusu yapar. Aday
 bulunan profil 12 saat, sonuç bulunmayan profil 24 saat boyunca
 cache'ten çalışır; profil değişirse beklemeden yeniden taranabilir. `--force`
