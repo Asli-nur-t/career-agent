@@ -228,10 +228,17 @@ class PublicATSClient:
         slug = _board_slug(source_url, ats_type)
         escaped = quote(slug, safe="")
         if ats_type == "greenhouse":
-            endpoint = (
+            board_endpoint = (
                 "https://boards-api.greenhouse.io/v1/boards/"
-                f"{escaped}/jobs?content=true"
+                f"{escaped}/jobs"
             )
+            try:
+                payload = self._get_json(f"{board_endpoint}?content=true")
+            except ATSFetchError as error:
+                if error.code != "response_too_large":
+                    raise
+                payload = self._get_json(board_endpoint)
+            return self._greenhouse(payload)
         elif ats_type == "lever":
             api_host = (
                 "api.eu.lever.co"
@@ -247,8 +254,6 @@ class PublicATSClient:
         else:
             raise ATSFetchError("unsupported_ats")
         payload = self._get_json(endpoint)
-        if ats_type == "greenhouse":
-            return self._greenhouse(payload)
         if ats_type == "lever":
             return self._lever(payload)
         return self._ashby(payload)

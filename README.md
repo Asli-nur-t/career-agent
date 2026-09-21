@@ -272,6 +272,10 @@ API listesini pano başına en fazla 200 ilanla açar; yalnızca aynı doğrulan
 pano URL'sine ait canlı ilanları aday havuzuna ekler. Sorgu başına genişletilen
 ilan sayısı ayrıca 500 ile sınırlandırılır. Böylece eski indeks kaydı başvuru
 adayı olmaz, yalnızca güncel pano keşfi için kullanılır.
+Greenhouse panosunun açıklamalarla birlikte yanıtı güvenli boyut sınırını
+aşarsa aynı public API yalnızca başlık, konum ve ilan URL'si metadatasıyla bir
+kez daha okunur. Yanıt sınırı yükseltilmez; boyut dışındaki hatalarda tekrar
+isteği yapılmaz.
 Önceki taramalarda birikmiş kapalı veya konum politikasına uymayan profil
 adaylarını yeni Serper sorgusu harcamadan yeniden değerlendirmek için:
 
