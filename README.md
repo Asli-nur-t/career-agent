@@ -99,6 +99,22 @@ veya okunamayan kayıt `needs_review` durumunda yazılır. Mesajın bulunmaması
 ilanın aktif olduğu anlamına gelmez. Sistem giriş/CAPTCHA kontrollerini aşmaz.
 Bu kayıtlar onaylanmadan `job_postings` tablosuna veya başvuru akışına girmez.
 
+Doğrulanmış şirket profillerindeki resmî LinkedIn adreslerinden, LinkedIn'e
+otomatik istek göndermeden şirketin güncel ilan sekmesine giden güvenli
+bağlantıları listelemek için:
+
+```bash
+PYTHONPATH=backend python -m app.list_company_job_pages \
+  --missing-careers-only \
+  --limit 100
+```
+
+Komut yalnızca `https` LinkedIn şirket URL'lerini kabul eder; kişi profili,
+taklit alan adı ve geçersiz şirket slug'larını eler. Çıktı elle açılacak bir
+`linkedin_jobs_url` üretir. Oturum çerezi kullanmaz, LinkedIn'i taramaz ve
+ilanı aktif kabul etmez. Seçilen ilan yine mevcut doğrulama ve insan onayı
+kapılarından geçirilmelidir.
+
 Arama başlığı ve özetinde açıkça görülen konum, çalışma biçimi, istihdam türü,
 göreli yayın tarihi ve aktif/kapalı işaretleri aday kaydına eklenir. Eksik bilgi
 tahmin edilmez; `unknown` veya `null` olarak kalır. Bir arama özeti aktiflik
