@@ -115,6 +115,25 @@ taklit alan adı ve geçersiz şirket slug'larını eler. Çıktı elle açılac
 ilanı aktif kabul etmez. Seçilen ilan yine mevcut doğrulama ve insan onayı
 kapılarından geçirilmelidir.
 
+Şirketin LinkedIn ilan sekmesinde açık olduğunu elle gördüğünüz belirli bir
+ilanı mevcut inceleme kuyruğuna eklemek için:
+
+```bash
+PYTHONPATH=backend python -m app.import_company_job \
+  --company-id UUID \
+  --listing-url "https://www.linkedin.com/jobs/view/NUMERIC_ID" \
+  --title "Python Developer" \
+  --location "İstanbul, Türkiye" \
+  --work-mode hybrid \
+  --employment-type full_time \
+  --confirmed-active
+```
+
+Yalnızca doğrulanmış ve geçerli bir LinkedIn şirket profiline bağlı şirketler
+kabul edilir. İlan URL'si kanonik biçime getirilir, izleme parametreleri atılır
+ve kayıt doğrudan onaylanmak yerine `needs_review` kuyruğuna girer. Daha önce
+reddedilmiş ya da onaylanmış terminal kayıtlar yeniden açılmaz.
+
 Arama başlığı ve özetinde açıkça görülen konum, çalışma biçimi, istihdam türü,
 göreli yayın tarihi ve aktif/kapalı işaretleri aday kaydına eklenir. Eksik bilgi
 tahmin edilmez; `unknown` veya `null` olarak kalır. Bir arama özeti aktiflik

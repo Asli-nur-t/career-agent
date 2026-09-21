@@ -43,6 +43,7 @@ PAGE_VERIFIED_ACTIVE_CODES = (
     "greenhouse_public_api_present",
     "lever_public_api_present",
     "ashby_public_api_present",
+    "manual_linkedin_company_page_confirmation",
 )
 OFFICIAL_ATS_PROVIDERS = ("greenhouse", "lever", "ashby")
 SUPPORTED_JOB_PROVIDERS = (
