@@ -27,6 +27,8 @@ from app.job_metadata import extract_job_metadata
 
 
 MAX_BOARD_RESULTS = 10
+MAX_EXPANDED_ATS_JOBS_PER_BOARD = 200
+MAX_EXPANDED_ATS_LISTINGS = 500
 UNKNOWN_EMPLOYER = "İşveren adı doğrulanmadı"
 PAGE_VERIFIED_ACTIVE_CODES = (
     "linkedin_active_marker",
@@ -487,54 +489,11 @@ class JobBoardActivityVerifier:
         *,
         checked_at: datetime,
     ) -> JobBoardActivity:
-        if self._ats_reader is None:
-            return JobBoardActivity(
-                state="unknown",
-                code="ats_verifier_unavailable",
-                checked_url=None,
-                checked_at=checked_at,
-            )
-        try:
-            source = classify_career_source(listing.listing_url)
-        except ValueError:
-            source = None
-        if (
-            source is None
-            or source.source_type != "ats"
-            or source.ats_type != listing.provider
-        ):
-            return JobBoardActivity(
-                state="unknown",
-                code="invalid_ats_listing",
-                checked_url=None,
-                checked_at=checked_at,
-            )
-
-        key = (source.source_url, listing.provider)
-        with self._ats_lock:
-            cached = self._ats_cache.get(key)
-            if cached is None:
-                try:
-                    jobs = tuple(
-                        self._ats_reader.fetch(
-                            source.source_url,
-                            listing.provider,
-                        )
-                    )
-                except Exception as error:
-                    from app.ats import ATSFetchError
-
-                    if not isinstance(error, ATSFetchError):
-                        raise
-                    cached = (None, error.code)
-                else:
-                    cached = (jobs, None)
-                self._ats_cache[key] = cached
-        jobs, error_code = cached
+        jobs, error_code, source_url = self._load_official_ats_jobs(listing)
         if jobs is None:
             return JobBoardActivity(
                 state="unknown",
-                code=f"ats_{error_code or 'fetch_failed'}",
+                code=error_code or "ats_fetch_failed",
                 checked_url=None,
                 checked_at=checked_at,
             )
@@ -550,12 +509,16 @@ class JobBoardActivityVerifier:
                         position=1,
                     )
                 )
+                job_source = classify_career_source(normalized.listing_url)
             except ValueError:
                 continue
             if (
-                normalized.provider == listing.provider
-                and normalized.external_id == listing.external_id
+                job_source is None
+                or job_source.source_url != source_url
+                or normalized.provider != listing.provider
             ):
+                continue
+            if normalized.external_id == listing.external_id:
                 matched = job
                 break
         if matched is None:
@@ -589,6 +552,119 @@ class JobBoardActivityVerifier:
             employment_type=metadata.employment_type,
             published_at=matched.published_at,
         )
+
+    def _load_official_ats_jobs(
+        self,
+        listing: JobBoardListing,
+    ) -> tuple[tuple[NormalizedATSJob, ...] | None, str | None, str | None]:
+        if self._ats_reader is None:
+            return None, "ats_verifier_unavailable", None
+        try:
+            source = classify_career_source(listing.listing_url)
+        except ValueError:
+            source = None
+        if (
+            source is None
+            or source.source_type != "ats"
+            or source.ats_type != listing.provider
+        ):
+            return None, "invalid_ats_listing", None
+
+        key = (source.source_url, listing.provider)
+        with self._ats_lock:
+            cached = self._ats_cache.get(key)
+            if cached is None:
+                try:
+                    jobs = tuple(
+                        self._ats_reader.fetch(
+                            source.source_url,
+                            listing.provider,
+                        )
+                    )
+                except Exception as error:
+                    from app.ats import ATSFetchError
+
+                    if not isinstance(error, ATSFetchError):
+                        raise
+                    cached = (None, error.code)
+                else:
+                    cached = (jobs, None)
+                self._ats_cache[key] = cached
+        jobs, error_code = cached
+        if jobs is None:
+            return None, f"ats_{error_code or 'fetch_failed'}", source.source_url
+        return jobs, None, source.source_url
+
+    def expand_official_ats(
+        self,
+        listing: JobBoardListing,
+        *,
+        max_jobs: int = MAX_EXPANDED_ATS_JOBS_PER_BOARD,
+    ) -> tuple[JobBoardListing, ...]:
+        """Expand an indexed ATS URL into the board's current live jobs."""
+
+        if listing.provider not in OFFICIAL_ATS_PROVIDERS:
+            return ()
+        if not 1 <= max_jobs <= MAX_EXPANDED_ATS_JOBS_PER_BOARD:
+            raise ValueError("ATS expansion limit is invalid.")
+        jobs, _, source_url = self._load_official_ats_jobs(listing)
+        if jobs is None or source_url is None:
+            return ()
+        checked_at = datetime.now(timezone.utc)
+        expanded: list[JobBoardListing] = []
+        for job in jobs[:max_jobs]:
+            try:
+                normalized = normalize_job_board_result(
+                    SearchResult(
+                        title=job.title,
+                        url=job.job_url,
+                        snippet=safe_text(job.description_text, 20_000),
+                        position=listing.search_position,
+                    )
+                )
+                job_source = classify_career_source(normalized.listing_url)
+            except ValueError:
+                continue
+            if (
+                job_source is None
+                or job_source.source_url != source_url
+                or normalized.provider != listing.provider
+            ):
+                continue
+            metadata = extract_job_metadata(
+                job.title,
+                " ".join(
+                    item
+                    for item in (job.location, job.employment_type)
+                    if item
+                ),
+                observed_at=checked_at,
+            )
+            expanded.append(
+                replace(
+                    normalized,
+                    company_name_raw=(
+                        normalized.company_name_raw
+                        or listing.company_name_raw
+                    ),
+                    location=job.location or metadata.location,
+                    work_mode=(
+                        "remote"
+                        if job.is_remote is True
+                        else metadata.work_mode
+                    ),
+                    employment_type=metadata.employment_type,
+                    published_at=job.published_at,
+                    published_precision=(
+                        "exact" if job.published_at is not None else None
+                    ),
+                    activity_state="active",
+                    activity_code=f"{listing.provider}_public_api_present",
+                    activity_url=normalized.listing_url,
+                    activity_checked_at=checked_at,
+                )
+            )
+        return tuple(expanded)
 
 
 def _hostname_belongs_to(hostname: str, domain: str) -> bool:
@@ -972,14 +1048,18 @@ class JobBoardSearchConnector:
         *,
         activity_verifier: JobBoardActivityVerifier | None = None,
         activity_providers: tuple[str, ...] | None = None,
+        expand_official_ats: bool = False,
     ) -> None:
         if activity_providers is not None and any(
             provider not in SUPPORTED_JOB_PROVIDERS
             for provider in activity_providers
         ):
             raise ValueError("Activity provider filter is invalid.")
+        if expand_official_ats and activity_verifier is None:
+            raise ValueError("ATS expansion requires an activity verifier.")
         self._search_client = search_client
         self._activity_verifier = activity_verifier
+        self._expand_official_ats = expand_official_ats
         self._activity_providers = (
             frozenset(activity_providers)
             if activity_providers is not None
@@ -1010,6 +1090,8 @@ class JobBoardSearchConnector:
         seen: set[tuple[str, str]] = set()
         filtered = 0
         for result in results:
+            if len(listings) >= MAX_EXPANDED_ATS_LISTINGS:
+                break
             try:
                 listing = normalize_job_board_result(result)
             except ValueError:
@@ -1071,6 +1153,8 @@ class JobBoardSearchConnector:
         seen: set[tuple[str, str]] = set()
         filtered = 0
         for result in results:
+            if len(listings) >= MAX_EXPANDED_ATS_LISTINGS:
+                break
             try:
                 listing = normalize_job_board_result(result)
             except ValueError:
@@ -1080,6 +1164,25 @@ class JobBoardSearchConnector:
             if key in seen:
                 filtered += 1
                 continue
+            if (
+                self._expand_official_ats
+                and listing.provider in OFFICIAL_ATS_PROVIDERS
+                and self._activity_verifier is not None
+            ):
+                expanded = self._activity_verifier.expand_official_ats(listing)
+                if expanded:
+                    for expanded_listing in expanded:
+                        expanded_key = (
+                            expanded_listing.provider,
+                            expanded_listing.external_id,
+                        )
+                        if expanded_key in seen:
+                            continue
+                        seen.add(expanded_key)
+                        listings.append(expanded_listing)
+                        if len(listings) >= MAX_EXPANDED_ATS_LISTINGS:
+                            break
+                    continue
             seen.add(key)
             if self._should_verify_activity(listing.provider):
                 activity = self._activity_verifier.check(listing)

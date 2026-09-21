@@ -792,6 +792,7 @@ def main() -> None:
                     search_client,
                     activity_verifier=activity_verifier,
                     activity_providers=OFFICIAL_ATS_PROVIDERS,
+                    expand_official_ats=True,
                 ),
                 state.spec,
                 max_queries=args.max_queries,

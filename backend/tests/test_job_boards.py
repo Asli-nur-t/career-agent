@@ -6,6 +6,7 @@ from app.discovery.schemas import SearchResult
 from app.discovery.web_verifier import PageEvidence, SafeWebsiteVerifier
 from app.job_boards import (
     JobBoardActivityVerifier,
+    JobBoardListing,
     JobBoardSearchConnector,
     build_job_board_query,
     build_profile_job_queries,
@@ -366,6 +367,87 @@ class JobBoardTests(unittest.TestCase):
         self.assertEqual(activity.location, "Remote - Turkey")
         self.assertEqual(activity.work_mode, "remote")
         self.assertEqual(activity.published_at, published_at)
+
+        expanded = JobBoardActivityVerifier(
+            page_reader,
+            ats_reader=ats_reader,
+        ).expand_official_ats(listing)
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0].external_id, "lever-job-123")
+        self.assertEqual(expanded[0].activity_state, "active")
+        self.assertEqual(expanded[0].location, "Remote - Turkey")
+
+    def test_official_ats_expansion_rejects_cross_board_urls(self) -> None:
+        seed = normalize_job_board_result(
+            result("https://jobs.lever.co/acme/stale-job-123")
+        )
+        valid_job = SimpleNamespace(
+            external_id="live-job-123",
+            job_url="https://jobs.lever.co/acme/live-job-123",
+            apply_url=None,
+            title="AI Engineer",
+            location="Istanbul, Turkey",
+            department="AI",
+            employment_type="Full-time",
+            description_text="Python RAG",
+            is_remote=False,
+            published_at=datetime.now(timezone.utc),
+        )
+        cross_board_job = SimpleNamespace(
+            **{
+                **valid_job.__dict__,
+                "external_id": "evil-job-123",
+                "job_url": "https://jobs.lever.co/other/evil-job-123",
+            }
+        )
+        verifier = JobBoardActivityVerifier(
+            SimpleNamespace(),
+            ats_reader=SimpleNamespace(
+                fetch=lambda source_url, ats_type: [
+                    valid_job,
+                    cross_board_job,
+                ]
+            ),
+        )
+
+        expanded = verifier.expand_official_ats(seed)
+
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0].external_id, "live-job-123")
+
+    def test_profile_connector_expands_stale_ats_result(self) -> None:
+        stale_url = "https://jobs.lever.co/acme/stale-job-123"
+        live = JobBoardListing(
+            provider="lever",
+            external_id="live-job-123",
+            listing_url="https://jobs.lever.co/acme/live-job-123",
+            title="AI Engineer",
+            snippet="Python RAG",
+            search_position=1,
+            location="Istanbul, Turkey",
+            work_mode="hybrid",
+            activity_state="active",
+            activity_code="lever_public_api_present",
+        )
+        verifier = SimpleNamespace(
+            expand_official_ats=lambda listing: (live,),
+            check=lambda listing: self.fail("exact stale check not expected"),
+        )
+        connector = JobBoardSearchConnector(
+            SimpleNamespace(
+                search=lambda query, max_results: [result(stale_url)]
+            ),
+            activity_verifier=verifier,
+            activity_providers=("greenhouse", "lever", "ashby"),
+            expand_official_ats=True,
+        )
+
+        discovery = connector.search_query(
+            '("AI Engineer") site:jobs.lever.co',
+            max_results=5,
+        )
+
+        self.assertEqual(discovery.listings, (live,))
 
     def test_official_ats_api_absence_proves_closure(self) -> None:
         listing = normalize_job_board_result(

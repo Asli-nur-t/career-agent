@@ -266,6 +266,12 @@ Varsayılan olarak en fazla altı Serper sorgusu yapar. Aday
 bulunan profil 12 saat, sonuç bulunmayan profil 24 saat boyunca
 cache'ten çalışır; profil değişirse beklemeden yeniden taranabilir. `--force`
 yalnızca bilinçli bir erken yeniden tarama gerektiğinde kullanılmalıdır.
+Arama motorundaki resmî ATS ilanı kapanmış olsa bile pano kimliği güvenli
+biçimde çıkarılır. Sistem aynı Greenhouse, Lever veya Ashby panosunun public
+API listesini pano başına en fazla 200 ilanla açar; yalnızca aynı doğrulanmış
+pano URL'sine ait canlı ilanları aday havuzuna ekler. Sorgu başına genişletilen
+ilan sayısı ayrıca 500 ile sınırlandırılır. Böylece eski indeks kaydı başvuru
+adayı olmaz, yalnızca güncel pano keşfi için kullanılır.
 Önceki taramalarda birikmiş kapalı veya konum politikasına uymayan profil
 adaylarını yeni Serper sorgusu harcamadan yeniden değerlendirmek için:
 
