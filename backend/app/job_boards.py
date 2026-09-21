@@ -29,6 +29,7 @@ from app.job_metadata import extract_job_metadata
 MAX_BOARD_RESULTS = 10
 MAX_EXPANDED_ATS_JOBS_PER_BOARD = 200
 MAX_EXPANDED_ATS_LISTINGS = 500
+MAX_PROFILE_QUERY_LENGTH = 400
 UNKNOWN_EMPLOYER = "İşveren adı doğrulanmadı"
 PAGE_VERIFIED_ACTIVE_CODES = (
     "linkedin_active_marker",
@@ -54,6 +55,24 @@ SUPPORTED_JOB_PROVIDERS = (
 _NUMERIC_ID = re.compile(r"[0-9]{4,20}\Z")
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{5,100}\Z")
 _BOARD_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}\Z")
+_PROFILE_ROLE_QUERY_ALIASES = {
+    "ai engineer": ("Yapay Zeka Mühendisi",),
+    "machine learning engineer": ("Makine Öğrenmesi Mühendisi",),
+    "ml engineer": ("Makine Öğrenmesi Mühendisi",),
+    "genai engineer": ("Üretken Yapay Zeka Mühendisi",),
+    "nlp engineer": ("Doğal Dil İşleme Mühendisi",),
+    "data scientist": ("Veri Bilimci",),
+    "software engineer": ("Yazılım Mühendisi",),
+    "backend engineer": ("Backend Geliştirici", "Backend Mühendisi"),
+    "python developer": ("Python Geliştirici",),
+    "net developer": (".NET Geliştirici",),
+    "research engineer": ("Araştırma Mühendisi",),
+    "mobile developer": (
+        "Mobil Geliştirici",
+        "Mobil Uygulama Geliştirici",
+        "Flutter Developer",
+    ),
+}
 
 
 class SearchClient(Protocol):
@@ -990,7 +1009,7 @@ def build_profile_job_queries(
 
     role_clauses: list[str] = []
     for group in role_groups:
-        roles = []
+        roles: list[str] = []
         seen: set[str] = set()
         for role in group:
             cleaned = phrase(role, 100)
@@ -1001,19 +1020,32 @@ def build_profile_job_queries(
         if not roles:
             continue
 
+        aliases: list[str] = []
+        for role in roles:
+            for alias in _PROFILE_ROLE_QUERY_ALIASES.get(
+                _marker_text(role),
+                (),
+            ):
+                cleaned = phrase(alias, 100)
+                marker = _marker_text(cleaned)
+                if cleaned and marker and marker not in seen:
+                    seen.add(marker)
+                    aliases.append(cleaned)
+        roles.extend(aliases)
+
         selected: list[str] = []
         for role in roles:
             candidate = selected + [role]
             role_clause = " OR ".join(f'"{item}"' for item in candidate)
             queries_for_sources = (
-                (
-                    f"({role_clause}){location_clause} {sites}{date_clause}"
-                    if apply_search_filters
-                    else f"({role_clause}) {sites}"
-                )
-                for sites, apply_search_filters in source_groups
+                f"({role_clause}){location_clause} {sites}"
+                f"{date_clause if apply_date_filter else ''}"
+                for sites, apply_date_filter in source_groups
             )
-            if any(len(query) > 500 for query in queries_for_sources):
+            if any(
+                len(query) > MAX_PROFILE_QUERY_LENGTH
+                for query in queries_for_sources
+            ):
                 break
             selected = candidate
         if not selected:
@@ -1023,14 +1055,11 @@ def build_profile_job_queries(
         )
 
     queries: list[str] = []
-    for sites, apply_search_filters in source_groups:
+    for sites, apply_date_filter in source_groups:
         for role_clause in role_clauses:
             queries.append(
-                (
-                    f"({role_clause}){location_clause} {sites}{date_clause}"
-                    if apply_search_filters
-                    else f"({role_clause}) {sites}"
-                )
+                f"({role_clause}){location_clause} {sites}"
+                f"{date_clause if apply_date_filter else ''}"
             )
             if len(queries) >= max_queries:
                 break

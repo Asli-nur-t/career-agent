@@ -42,11 +42,17 @@ class JobBoardTests(unittest.TestCase):
         )
 
         self.assertEqual(len(queries), 3)
-        self.assertTrue(all(len(query) <= 500 for query in queries))
+        self.assertTrue(all(len(query) <= 400 for query in queries))
         self.assertIn('"AI Engineer" OR "Machine Learning Engineer"', queries[0])
-        self.assertNotIn('("İstanbul")', queries[0])
+        self.assertIn('"Yapay Zeka Mühendisi"', queries[0])
+        self.assertIn('("İstanbul")', queries[0])
+        self.assertIn(
+            '(remote OR uzaktan) ("Türkiye" OR "Turkey")',
+            queries[0],
+        )
         self.assertNotIn("after:2026-08-22", queries[0])
         self.assertIn('"Python OR site:evil.example"', queries[1])
+        self.assertIn('"Backend Geliştirici"', queries[1])
         self.assertTrue(all("jobs.lever.co" in query for query in queries))
 
         all_sources = build_profile_job_queries(
@@ -58,6 +64,10 @@ class JobBoardTests(unittest.TestCase):
         self.assertTrue(
             all("jobs.ashbyhq.com" in query for query in all_sources[:3])
         )
+        self.assertTrue(
+            all('("İstanbul")' in query for query in all_sources[:3])
+        )
+        self.assertIn('"Flutter Developer"', all_sources[2])
         self.assertTrue(
             all("linkedin.com/jobs/view" in query for query in all_sources[3:])
         )

@@ -247,12 +247,18 @@ PYTHONPATH=backend python -m app.discover_profile_jobs \
 
 Komut önce birincil, ikincil ve üçüncül rolleri Greenhouse, Lever ve Ashby'nin
 resmî ilan sayfalarında; ardından ikincil kaynak olan LinkedIn, Kariyer.net,
-Indeed ve Glassdoor'da arar. ATS URL keşfi, arama indeksindeki eksik konum ve
-tarih metadatası nedeniyle konum/tarih operatörleriyle daraltılmaz. Bulunan ATS
-ilanının güncelliği, konumu ve çalışma biçimi filtrelemeden önce sağlayıcının
-canlı public API verisinden alınır. Aynı ilan kimliği API listesinde hâlâ
+Indeed ve Glassdoor'da arar. Her iki kaynak grubu profilin yerinde/hibrit ve
+uzaktan çalışma coğrafyasıyla daraltılır. ATS URL keşfinde tarih operatörü
+kullanılmaz; bulunan ATS ilanının güncelliği, konumu ve çalışma biçimi
+filtrelemeden önce sağlayıcının canlı public API verisinden alınır. Aynı ilan
+kimliği API listesinde hâlâ
 bulunuyorsa `active`, listeden kaldırılmışsa kapalı kabul edilir. LinkedIn ve
 diğer ikincil kaynaklar bu aşamada sayfa isteğiyle otomatik doğrulanmaz.
+Profildeki rol adları sorguya önce değişmeden eklenir; kalan güvenli sorgu
+uzunluğu içinde Yapay Zeka Mühendisi, Python Geliştirici, Yazılım Mühendisi ve
+Mobil Geliştirici gibi Türkçe unvanlar da aranır. Böylece profil dosyasında aynı
+rolün iki dilde tekrar tutulması gerekmez. Arama motorunun alan adı filtresini
+korumak için oluşturulan sorgular ayrıca 400 karakterle sınırlandırılır.
 Komutun `query_stats` çıktısı her sorgunun normalize edilen sağlayıcı ve
 aktiflik sayılarını gösterir; bunlar ham arama sonuçlarıdır ve aday kabul
 edildikleri anlamına gelmez. `accepted_count`, `activity_code_counts` ve
