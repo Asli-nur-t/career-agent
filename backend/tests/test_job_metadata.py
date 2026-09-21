@@ -48,3 +48,33 @@ def test_missing_metadata_remains_unknown() -> None:
     assert metadata.published_at is None
     assert metadata.activity_state == "unknown"
     assert metadata.activity_checked_at is None
+
+
+def test_salary_and_contract_text_are_not_locations() -> None:
+    metadata = extract_job_metadata(
+        "Applied ML Engineer — Remote, Part-Time | $150/hr",
+        "Remote · Part-time · 2 days ago",
+    )
+
+    assert metadata.location is None
+    assert metadata.work_mode == "remote"
+    assert metadata.employment_type == "part_time"
+
+
+def test_hiring_and_based_in_locations_are_extracted() -> None:
+    us = extract_job_metadata(
+        "Acme hiring AI Engineer - Remote in Texas, United States | LinkedIn",
+        None,
+    )
+    turkey = extract_job_metadata(
+        "AI Engineer (Remote - Based in Turkey) at Acme - LinkedIn",
+        None,
+    )
+    emea = extract_job_metadata(
+        "Python Backend Engineer at Hired — EMEA | LinkedIn Jobs",
+        None,
+    )
+
+    assert us.location == "Texas, United States"
+    assert turkey.location == "Turkey"
+    assert emea.location == "EMEA"

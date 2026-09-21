@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import unicodedata
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -11,8 +12,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.discovery.schemas import SearchResult
-from app.job_boards import normalize_job_board_result
-from app.models import JobBoardCandidate, JobPosting
+from app.company_names import company_name_key
+from app.job_boards import UNKNOWN_EMPLOYER, normalize_job_board_result
+from app.models import Company, JobBoardCandidate, JobPosting
 
 
 def _has_reviewable_evidence(candidate: JobBoardCandidate) -> bool:
@@ -23,7 +25,7 @@ def _has_reviewable_evidence(candidate: JobBoardCandidate) -> bool:
         if not isinstance(item, dict):
             return False
         if (
-            item.get("kind") == "search_result"
+            item.get("kind") in {"search_result", "profile_search_result"}
             and item.get("url") == candidate.listing_url
             and isinstance(item.get("query"), str)
             and bool(item["query"].strip())
@@ -33,7 +35,11 @@ def _has_reviewable_evidence(candidate: JobBoardCandidate) -> bool:
 
 
 def _validate_candidate(candidate: JobBoardCandidate) -> None:
-    if candidate.company_id is None or not _has_reviewable_evidence(candidate):
+    has_company = candidate.company_id is not None or bool(
+        isinstance(candidate.company_name_raw, str)
+        and candidate.company_name_raw.strip()
+    )
+    if not has_company or not _has_reviewable_evidence(candidate):
         raise ValueError("candidate_data_mismatch")
     try:
         normalized = normalize_job_board_result(
@@ -52,6 +58,56 @@ def _validate_candidate(candidate: JobBoardCandidate) -> None:
         or normalized.listing_url != candidate.listing_url
     ):
         raise ValueError("candidate_data_mismatch")
+
+
+def _clean_review_company_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("company_name_required")
+    normalized = unicodedata.normalize("NFKC", value)
+    if any(
+        unicodedata.category(character).startswith("C")
+        for character in normalized
+    ):
+        raise ValueError("company_name_invalid")
+    cleaned = " ".join(normalized.split())
+    if not cleaned or len(cleaned) > 500 or cleaned == UNKNOWN_EMPLOYER:
+        raise ValueError("company_name_required")
+    return cleaned
+
+
+def _resolve_candidate_company(
+    session: Session,
+    candidate: JobBoardCandidate,
+    *,
+    company_name: str | None,
+) -> tuple[Company, bool]:
+    if candidate.company_id is not None:
+        if company_name is not None:
+            raise ValueError("company_override_not_allowed")
+        company = session.get(Company, candidate.company_id)
+        if company is None:
+            raise ValueError("candidate_company_not_found")
+        return company, False
+
+    name = _clean_review_company_name(
+        company_name if company_name is not None else candidate.company_name_raw
+    )
+    key = company_name_key(name)
+    company = session.scalar(select(Company).where(Company.name_key == key))
+    created = company is None
+    if company is None:
+        company = Company(
+            id=uuid4(),
+            name=name,
+            name_key=key,
+            sector=None,
+            needs_review=True,
+        )
+        session.add(company)
+        session.flush()
+    candidate.company_id = company.id
+    candidate.company_name_raw = name
+    return company, created
 
 
 def _candidate_content_hash(candidate: JobBoardCandidate) -> str:
@@ -97,11 +153,14 @@ def review_job_board_candidate(
     candidate_id: UUID,
     approve: bool,
     confirmed_active: bool = False,
+    company_name: str | None = None,
 ) -> dict[str, object]:
     if approve and not confirmed_active:
         raise ValueError("active_confirmation_required")
     if not approve and confirmed_active:
         raise ValueError("confirmation_not_allowed_for_rejection")
+    if not approve and company_name is not None:
+        raise ValueError("company_override_not_allowed")
 
     with Session(database) as session:
         candidate = session.scalar(
@@ -118,6 +177,8 @@ def review_job_board_candidate(
             )
         )
         changed = False
+        company_created = False
+        reviewed_company: Company | None = None
 
         if approve:
             _validate_candidate(candidate)
@@ -132,6 +193,11 @@ def review_job_board_candidate(
                     raise ValueError("invalid_candidate_status")
                 if existing_posting is not None:
                     raise ValueError("candidate_posting_already_exists")
+                reviewed_company, company_created = _resolve_candidate_company(
+                    session,
+                    candidate,
+                    company_name=company_name,
+                )
                 now = datetime.now(timezone.utc)
                 posting = JobPosting(
                     id=uuid4(),
@@ -191,6 +257,15 @@ def review_job_board_candidate(
             "listing_url": candidate.listing_url,
             "status": candidate.status,
             "posting_id": str(posting.id) if posting is not None else None,
+            "company_id": (
+                str(candidate.company_id) if candidate.company_id else None
+            ),
+            "company_name": (
+                reviewed_company.name
+                if reviewed_company is not None
+                else getattr(candidate, "company_name_raw", None)
+            ),
+            "company_created": company_created,
             "changed": changed,
         }
 
@@ -208,6 +283,12 @@ def main() -> None:
         action="store_true",
         help="Confirm that the listing was manually opened and is active.",
     )
+    parser.add_argument(
+        "--company-name",
+        help=(
+            "Set the reviewed employer name for a profile-discovered job."
+        ),
+    )
     args = parser.parse_args()
     from app.database import engine
 
@@ -217,6 +298,7 @@ def main() -> None:
             candidate_id=args.candidate_id,
             approve=args.approve,
             confirmed_active=args.confirmed_active,
+            company_name=args.company_name,
         )
     except ValueError as error:
         print(

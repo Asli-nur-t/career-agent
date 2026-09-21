@@ -27,6 +27,11 @@ _ACTIVE_MARKERS = (
     "basvurular devam ediyor",
     "aktif olarak ise alim",
 )
+_LOCATION_NOISE = re.compile(
+    r"(?<![a-z0-9])(?:remote|uzaktan|hybrid|hibrit|on\s*site|onsite|"
+    r"full\s*time|part\s*time|tam\s*zamanli|yari\s*zamanli|contract|"
+    r"internship|temporary|ref|salary|hourly)(?![a-z0-9])"
+)
 
 
 @dataclass(frozen=True)
@@ -89,35 +94,69 @@ def _published_at(
     return observed_at - delta, precision
 
 
-def _location_from_title(title: str) -> str | None:
-    parts = re.split(r"\s+[—–]\s+", title)
-    if len(parts) < 2:
-        return None
-    candidate = parts[-1]
+def _clean_location_candidate(value: str) -> str | None:
     candidate = re.sub(
-        r"\s+(?:-|\|)\s+(?:LinkedIn|Indeed|Glassdoor|Kariyer\.net)\s*$",
+        r"\s*(?:-|\|)\s*(?:LinkedIn(?:\s+Jobs)?|Indeed|Glassdoor|"
+        r"Kariyer\.net)\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" .,|-…()")
+    candidate = re.sub(
+        r"^(?:remote|uzaktan)\s*[,/-]\s*",
         "",
         candidate,
         flags=re.IGNORECASE,
-    ).strip(" .,|-…")
+    ).strip(" .,|-…()")
     normalized = normalize_metadata_text(candidate)
     if (
         not candidate
         or len(candidate) > 200
         or "http" in normalized
+        or any(symbol in candidate for symbol in ("$", "€", "£", "¥"))
+        or "|" in candidate
+        or _LOCATION_NOISE.search(normalized)
         or normalized in {"linkedin", "indeed", "glassdoor", "kariyer net"}
     ):
         return None
     return candidate
 
 
+def _location_from_title(title: str) -> str | None:
+    based_in = re.search(
+        r"\bbased\s+in\s+(.+?)(?:\)|\s+at\s+|\s+[|—–]\s+|$)",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if based_in:
+        candidate = _clean_location_candidate(based_in.group(1))
+        if candidate:
+            return candidate
+
+    hiring_in = re.search(
+        r"\bhiring\b.+?\s+in\s+(.+?)(?:\s*\|\s*LinkedIn.*)?$",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if hiring_in:
+        candidate = _clean_location_candidate(hiring_in.group(1))
+        if candidate:
+            return candidate
+
+    parts = re.split(r"\s+[—–]\s+", title)
+    if len(parts) < 2:
+        return None
+    return _clean_location_candidate(parts[-1])
+
+
 def _location_from_snippet(snippet: str) -> str | None:
     parts = [part.strip() for part in re.split(r"[·•]", snippet)]
     for index, part in enumerate(parts):
         if _RELATIVE_DATE.search(normalize_metadata_text(part)) and index:
-            candidate = parts[index - 1].strip(" .,|-…")
-            if candidate and len(candidate) <= 200:
-                return candidate
+            for candidate_part in reversed(parts[:index]):
+                candidate = _clean_location_candidate(candidate_part)
+                if candidate:
+                    return candidate
     return None
 
 

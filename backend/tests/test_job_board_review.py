@@ -4,6 +4,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from app.review_job_board_candidate import review_job_board_candidate
+from app.models import Company, JobPosting
 
 
 def candidate(*, status: str = "needs_review") -> SimpleNamespace:
@@ -38,6 +39,34 @@ def candidate(*, status: str = "needs_review") -> SimpleNamespace:
 
 
 class JobBoardReviewTests(unittest.TestCase):
+    def test_profile_candidate_creates_review_company_on_approval(self) -> None:
+        item = candidate()
+        item.company_id = None
+        item.company_name_raw = "İşveren adı doğrulanmadı"
+        item.evidence[0]["kind"] = "profile_search_result"
+        with patch(
+            "app.review_job_board_candidate.Session"
+        ) as session_class:
+            session = session_class.return_value.__enter__.return_value
+            session.scalar.side_effect = [item, None, None]
+            result = review_job_board_candidate(
+                object(),
+                candidate_id=item.id,
+                approve=True,
+                confirmed_active=True,
+                company_name="New Employer",
+            )
+
+        added = [call.args[0] for call in session.add.call_args_list]
+        company = next(value for value in added if isinstance(value, Company))
+        posting = next(value for value in added if isinstance(value, JobPosting))
+        self.assertEqual(company.name, "New Employer")
+        self.assertTrue(company.needs_review)
+        self.assertEqual(item.company_id, company.id)
+        self.assertEqual(posting.job_board_candidate_id, item.id)
+        self.assertTrue(result["company_created"])
+        self.assertEqual(result["company_name"], "New Employer")
+
     def test_approval_requires_explicit_active_confirmation(self) -> None:
         with patch(
             "app.review_job_board_candidate.Session"

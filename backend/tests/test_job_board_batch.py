@@ -5,8 +5,9 @@ from uuid import uuid4
 
 from app.audit_job_board_candidates import audit_candidates
 from app.discover_job_board_jobs import due_companies, record_job_board_scan
+from app.job_boards import UNKNOWN_EMPLOYER
 from app.matching import CandidateProfileSpec
-from app.review_job_board_queue import rank_candidate
+from app.review_job_board_queue import _to_spec, rank_candidate
 
 
 def test_due_companies_use_verified_brand() -> None:
@@ -83,11 +84,151 @@ def test_review_queue_ranks_without_mutation() -> None:
         listing_url="https://www.linkedin.com/jobs/view/123456",
         snippet="Python RAG LLM FastAPI PostgreSQL",
         location="İstanbul",
+        activity_state="active",
+        activity_code="linkedin_active_marker",
     )
 
     assert candidate.recommendation == "strong_apply"
     assert candidate.score >= 75
     assert candidate.provider == "linkedin"
+
+
+def test_review_queue_preserves_tertiary_roles() -> None:
+    stored = SimpleNamespace(
+        label="test",
+        target_roles=["AI Engineer"],
+        secondary_roles=["Backend Engineer"],
+        tertiary_roles=["Mobile Developer"],
+        skills=["Flutter"],
+        preferred_locations=[],
+        preferred_remote_locations=[],
+        excluded_locations=[],
+        allowed_work_modes=[],
+        location_filter_mode="prefer",
+        max_listing_age_days=30,
+        excluded_keywords=[],
+        max_years_experience=3,
+        remote_allowed=True,
+    )
+
+    assert _to_spec(stored).tertiary_roles == ["Mobile Developer"]
+
+
+def test_review_queue_marks_unknown_employer() -> None:
+    profile = CandidateProfileSpec(
+        label="test",
+        target_roles=["AI Engineer"],
+        skills=["Python", "RAG", "LLM", "FastAPI", "PostgreSQL"],
+    )
+    item = rank_candidate(
+        profile,
+        candidate_id=uuid4(),
+        provider="linkedin",
+        company_name=UNKNOWN_EMPLOYER,
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python RAG LLM FastAPI PostgreSQL",
+        location=None,
+    )
+
+    assert "company_name_unknown" in item.risk_flags
+    assert "candidate_evidence_incomplete" in item.risk_flags
+    assert item.recommendation == "review"
+
+
+def test_review_queue_reextracts_location_and_rejects_foreign_remote() -> None:
+    profile = CandidateProfileSpec(
+        label="strict",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+        preferred_locations=["İstanbul"],
+        preferred_remote_locations=["Türkiye", "Turkey"],
+        allowed_work_modes=["remote"],
+        location_filter_mode="require",
+    )
+    item = rank_candidate(
+        profile,
+        candidate_id=uuid4(),
+        provider="linkedin",
+        company_name="Acme",
+        title="Acme hiring AI Engineer - Remote in Azerbaijan | LinkedIn",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python · Easy Apply",
+        location=None,
+        activity_state="active",
+        activity_code="linkedin_active_marker",
+    )
+
+    assert item.location == "Azerbaijan"
+    assert item.score == 0
+    assert item.recommendation == "skip"
+    assert "remote_location_not_eligible" in item.risk_flags
+
+
+def test_unverified_activity_cannot_be_recommended_for_application() -> None:
+    profile = CandidateProfileSpec(
+        label="test",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+    )
+    item = rank_candidate(
+        profile,
+        candidate_id=uuid4(),
+        provider="linkedin",
+        company_name="Acme",
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python",
+        location=None,
+    )
+
+    assert item.recommendation == "review"
+    assert "activity_unverified" in item.risk_flags
+
+
+def test_search_snippet_active_marker_is_not_page_verification() -> None:
+    profile = CandidateProfileSpec(
+        label="test",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+    )
+    item = rank_candidate(
+        profile,
+        candidate_id=uuid4(),
+        provider="linkedin",
+        company_name="Acme",
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python · Actively recruiting",
+        location=None,
+        activity_state="active",
+        activity_code="search_text_active_marker",
+    )
+
+    assert item.recommendation == "review"
+    assert "activity_unverified" in item.risk_flags
+
+
+def test_current_structured_expiry_is_page_verification() -> None:
+    profile = CandidateProfileSpec(
+        label="test",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+    )
+    item = rank_candidate(
+        profile,
+        candidate_id=uuid4(),
+        provider="linkedin",
+        company_name="Acme",
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python",
+        location=None,
+        activity_state="active",
+        activity_code="linkedin_valid_through_current",
+    )
+
+    assert "activity_unverified" not in item.risk_flags
 
 
 def test_entity_audit_is_dry_run_by_default() -> None:

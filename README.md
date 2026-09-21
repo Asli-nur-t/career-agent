@@ -199,16 +199,97 @@ eşleştirmesine girmez; denetim kanıtı kayıt üzerinde korunur.
 Bekleyen adayları özel aday profiline göre puanlanmış biçimde listelemek için:
 
 ```bash
+PYTHONPATH=backend python -m app.audit_job_board_activity \
+  --limit 100 \
+  --apply
+
 PYTHONPATH=backend python -m app.review_job_board_queue \
   --profile aslinur-default \
   --minimum-score 35 \
   --limit 100
 ```
 
-Bu komut kayıtları onaylamaz, reddetmez veya değiştirmez. Yalnızca manuel
-incelemede önce bakılacak ilanları öne çıkarır. Aktifliği tarayıcıda doğrulanan
-ilan yine `review_job_board_candidate --approve --confirmed-active` komutuyla
-onaylanır.
+İlk komut bekleyen ilanları en fazla dört eşzamanlı, SSRF korumalı istekle
+denetler; başlık ve özetten konumu yeniden çıkarır, açık kapanış sinyali bulunan
+ilanı `rejected` yapar ve açık başvuru sinyali bulunan ilanı `active` olarak
+işaretler. Sayfadaki sınırlı JSON-LD `JobPosting.validThrough` alanı da
+doğrulanır: geçmiş tarih kapanış, makul bir gelecek tarih aktiflik kanıtıdır;
+bozuk, çelişkili veya aşırı ileri tarihler güvenilmez kabul edilir. Arama
+özetindeki tarih ya da “aktif işe alım” ifadesi tek başına aktiflik kanıtı
+sayılmaz. İşlem hiçbir kaydı silmez ve sonucu kanıta ekler. İkinci komut
+varsayılan olarak yalnızca aktifliği doğrulanmış ilanları gösterir; erişimi
+engellenen veya aktifliği belirsiz kayıtlar normal başvuru kuyruğuna girmez.
+Tanılama gerektiğinde `--include-unverified` ile ayrıca görülebilirler.
+Kuyruk komutu kayıtları değiştirmez. Aktif ilan yine
+`review_job_board_candidate --approve --confirmed-active` komutuyla insan
+onayından geçirilir.
+
+### Profil bazlı genel ilan keşfi
+
+Şirket listesinde bulunmayan işverenlerin ilanlarını da hedef rol, konum ve
+uzaktan çalışma tercihleriyle aramak için önce maliyetsiz sorgu planını görün:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --dry-run
+```
+
+Aramayı çalıştırmak için:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --max-queries 6 \
+  --max-results 10 \
+  --minimum-score 20
+```
+
+Komut önce birincil, ikincil ve üçüncül rolleri Greenhouse, Lever ve Ashby'nin
+resmî ilan sayfalarında; ardından ikincil kaynak olan LinkedIn, Kariyer.net,
+Indeed ve Glassdoor'da arar. ATS URL keşfi, arama indeksindeki eksik konum ve
+tarih metadatası nedeniyle konum/tarih operatörleriyle daraltılmaz. Bulunan ATS
+ilanının güncelliği, konumu ve çalışma biçimi filtrelemeden önce sağlayıcının
+canlı public API verisinden alınır. Aynı ilan kimliği API listesinde hâlâ
+bulunuyorsa `active`, listeden kaldırılmışsa kapalı kabul edilir. LinkedIn ve
+diğer ikincil kaynaklar bu aşamada sayfa isteğiyle otomatik doğrulanmaz.
+Komutun `query_stats` çıktısı her sorgunun normalize edilen sağlayıcı ve
+aktiflik sayılarını gösterir; bunlar ham arama sonuçlarıdır ve aday kabul
+edildikleri anlamına gelmez. `accepted_count`, `activity_code_counts` ve
+`exclusion_counts` alanları kayıt kapısının sonucunu açıklar. Kapalı ilanlar,
+zorunlu konum filtresinde konumu bilinmeyen ilanlar ve tercih edilen uzaktan
+çalışma coğrafyası dışında kalan ilanlar kaydedilmez. `Worldwide` gibi global
+uzaktan çalışma kapsamları ancak profilin `preferred_remote_locations`
+alanında açıkça listelenirse kabul edilir. Desteklenen URL'leri normalize eder,
+yinelenen ilanları tekilleştirir ve rol eşleşmesi olmayan sonuçları kaydetmeden eler.
+Varsayılan olarak en fazla altı Serper sorgusu yapar. Aday
+bulunan profil 12 saat, sonuç bulunmayan profil 24 saat boyunca
+cache'ten çalışır; profil değişirse beklemeden yeniden taranabilir. `--force`
+yalnızca bilinçli bir erken yeniden tarama gerektiğinde kullanılmalıdır.
+Önceki taramalarda birikmiş kapalı veya konum politikasına uymayan profil
+adaylarını yeni Serper sorgusu harcamadan yeniden değerlendirmek için:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --reconcile-only
+```
+
+Genel aramada şirket adı güvenilir biçimde çıkarılamazsa aday yine manuel
+incelemeye bırakılır. İlan tarayıcıda açılıp aktifliği ve işvereni doğrulandıktan
+sonra şirket adı açıkça verilerek onaylanabilir:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --approve \
+  --confirmed-active \
+  --company-name "Doğrulanmış İşveren"
+```
+
+Bu sırada mevcut şirket kaydı yeniden kullanılır; yoksa `needs_review` işaretli
+bir şirket kaydı oluşturulur. Ücretli model çağrısı yapılmaz ve ilan insan
+onayı olmadan `job_postings` tablosuna geçirilmez.
 
 ## Aday profili ve ilan eşleştirme
 
@@ -224,11 +305,20 @@ olunmak istenen düşük öncelikli alanları temsil eder. Üçüncül rol başl
 eşleştiğinde ilan en fazla manuel inceleme seviyesine taşınır; tek başına güçlü
 başvuru önerisi üretmez.
 
-Profilde `preferred_locations` ve `excluded_locations` konum kurallarını,
-`allowed_work_modes` ise `remote`, `hybrid` ve `onsite` seçeneklerini belirler.
+Profilde `preferred_locations` yerinde/hibrit şehirleri,
+`preferred_remote_locations` ise uzaktan çalışılabilecek ülke veya bölgeleri
+belirler. `excluded_locations` açık ret kurallarını, `allowed_work_modes` ise
+`remote`, `hybrid` ve `onsite` seçeneklerini belirler.
 `location_filter_mode` değeri `prefer` olduğunda konum yalnızca puanı etkiler;
 `require` olduğunda bilinen ve tercih dışı konumlar elenir. Konumu bilinmeyen
 ilanlar sessizce elenmez, `location_unknown` riskiyle manuel incelemeye kalır.
+Uzaktan çalışma biçimi coğrafi uygunluk anlamına gelmez. Örnek profilde
+`preferred_remote_locations` değeri `Türkiye` ve `Turkey` olduğu için Türkiye
+genelindeki remote ilanlar kabul edilir; ABD, APAC, Orta Doğu veya Azerbaycan
+gibi farklı kapsamlar `require` modunda elenir. `Worldwide`, `International`,
+`Anywhere` veya `Global` açıkça yazıyorsa Türkiye'den çalışmaya uygun kabul
+edilir. Ülke kapsamı bilinmeyen remote kayıtlar `remote_location_unknown`
+uyarısıyla saklanır fakat normal başvuru kuyruğuna girmez.
 `max_listing_age_days` sınırından eski olduğu açıkça bilinen ilanlar `skip`
 olur; yayın tarihi bilinmeyenler `published_date_unknown` olarak işaretlenir.
 Örnek profil yalnızca İstanbul ve Kocaeli'deki yerinde/hibrit ilanları veya
@@ -298,7 +388,7 @@ PYTHONPATH=backend python -m app.configure_candidate_profile \
   --file private/candidate_profile.json
 ```
 
-`--apply` mevcut hedef ve ikincil rolleri, konumları, hariç tutulan terimleri
+`--apply` mevcut hedef, ikincil ve üçüncül rolleri, konumları, hariç tutulan terimleri
 veya çalışma biçimi tercihlerini değiştirmez. CV'deki roller geçmiş deneyimi
 gösterebilir; iş tercihi sayılmaz ve yalnızca önizlemede gösterilir. Yalnızca
 kanıtlanan ve normalize edilen somut beceriler eklenir; işlemden önce

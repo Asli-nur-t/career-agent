@@ -17,7 +17,7 @@ from pydantic import (
 )
 
 
-MATCHER_VERSION = "rules-v3"
+MATCHER_VERSION = "rules-v4"
 _WHITESPACE = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 _TERM_TRANSLATIONS = (
@@ -124,6 +124,10 @@ class CandidateProfileSpec(BaseModel):
         default_factory=list,
         max_length=30,
     )
+    preferred_remote_locations: list[str] = Field(
+        default_factory=list,
+        max_length=30,
+    )
     excluded_locations: list[str] = Field(
         default_factory=list,
         max_length=30,
@@ -146,6 +150,7 @@ class CandidateProfileSpec(BaseModel):
         "tertiary_roles",
         "skills",
         "preferred_locations",
+        "preferred_remote_locations",
         "excluded_locations",
         "excluded_keywords",
     )
@@ -188,6 +193,7 @@ class CandidateProfileSpec(BaseModel):
             "tertiary_roles",
             "skills",
             "preferred_locations",
+            "preferred_remote_locations",
             "excluded_locations",
             "allowed_work_modes",
             "excluded_keywords",
@@ -196,6 +202,8 @@ class CandidateProfileSpec(BaseModel):
         # Preserve hashes created before optional filtering fields existed.
         if not data["excluded_locations"]:
             data.pop("excluded_locations")
+        if not data["preferred_remote_locations"]:
+            data.pop("preferred_remote_locations")
         if not data["allowed_work_modes"]:
             data.pop("allowed_work_modes")
         if not data["tertiary_roles"]:
@@ -326,6 +334,10 @@ def score_job(
         location_text,
         profile.excluded_locations,
     )
+    preferred_remote_location = _first_match(
+        location_text,
+        profile.preferred_remote_locations,
+    )
     work_mode = (job.work_mode or "").strip().casefold()
     if work_mode not in {"remote", "hybrid", "onsite"}:
         if job.is_remote is True:
@@ -341,12 +353,36 @@ def score_job(
     if location_match:
         score += 10
         matched.append(f"location:{location_match}")
-    elif work_mode == "remote" and profile.remote_allowed:
-        score += 10
-        matched.append("location:remote")
-    elif work_mode == "remote" and not profile.remote_allowed:
-        score -= 20
-        risks.append("remote_not_preferred")
+    elif work_mode == "remote":
+        if not profile.remote_allowed:
+            score -= 20
+            risks.append("remote_not_preferred")
+        elif not location_text:
+            risks.append("remote_location_unknown")
+            if (
+                profile.location_filter_mode == "require"
+                and profile.preferred_remote_locations
+            ):
+                hard_skip = True
+            else:
+                score += 10
+                matched.append("location:remote")
+        elif (
+            not profile.preferred_remote_locations
+            or preferred_remote_location
+        ):
+            score += 10
+            accepted_remote_scope = (
+                preferred_remote_location
+                or "unrestricted"
+            )
+            matched.append(
+                f"location:remote:{accepted_remote_scope}"
+            )
+        else:
+            risks.append("remote_location_not_eligible")
+            if profile.location_filter_mode == "require":
+                hard_skip = True
     elif location_text and profile.preferred_locations:
         risks.append("location_not_preferred")
         if profile.location_filter_mode == "require":

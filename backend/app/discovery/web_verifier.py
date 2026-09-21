@@ -47,6 +47,15 @@ class VerificationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PageEvidence:
+    """Bounded evidence extracted from one SSRF-safe public page fetch."""
+
+    final_url: str
+    visible_text: str
+    json_ld: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class _FetchResponse:
     status: int
     location: str | None
@@ -104,6 +113,72 @@ class _AnchorParser(HTMLParser):
             if name.lower() == "href" and value and len(value) <= 2048:
                 self.links.append(value)
                 break
+
+
+class _JsonLdParser(HTMLParser):
+    _MAX_SCRIPTS = 20
+    _MAX_SCRIPT_CHARS = 65_536
+    _MAX_TOTAL_CHARS = 262_144
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.scripts: list[str] = []
+        self._capturing = False
+        self._discard = False
+        self._parts: list[str] = []
+        self._script_characters = 0
+        self._characters = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.lower() != "script" or self._capturing:
+            return
+        media_type = next(
+            (
+                value.casefold().split(";", 1)[0].strip()
+                for name, value in attrs
+                if name.casefold() == "type" and value
+            ),
+            "",
+        )
+        if (
+            media_type == "application/ld+json"
+            and len(self.scripts) < self._MAX_SCRIPTS
+            and self._characters < self._MAX_TOTAL_CHARS
+        ):
+            self._capturing = True
+            self._discard = False
+            self._parts = []
+            self._script_characters = 0
+
+    def handle_data(self, data: str) -> None:
+        if not self._capturing or self._discard:
+            return
+        script_size = self._script_characters + len(data)
+        remaining = self._MAX_TOTAL_CHARS - self._characters
+        if script_size > self._MAX_SCRIPT_CHARS or len(data) > remaining:
+            self._discard = True
+            self._parts = []
+            self._script_characters = 0
+            return
+        self._parts.append(data)
+        self._script_characters = script_size
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "script" or not self._capturing:
+            return
+        if not self._discard:
+            value = "".join(self._parts).strip()
+            if value:
+                self.scripts.append(value)
+                self._characters += len(value)
+        self._capturing = False
+        self._discard = False
+        self._parts = []
+        self._script_characters = 0
 
 
 def _comparison_text(value: str) -> str:
@@ -286,21 +361,37 @@ class SafeWebsiteVerifier:
 
     def read_page_text(self, url: str) -> tuple[str, str]:
         """Read visible text through the verifier's SSRF-safe fetch path."""
-        return self._fetch_text(url)
+        evidence = self.read_page_evidence(url)
+        return evidence.final_url, evidence.visible_text
 
-    def _fetch_text(self, initial_url: str) -> tuple[str, str]:
-        current_url, media_type, decoded = self._fetch_document(initial_url)
+    def read_page_evidence(self, url: str) -> PageEvidence:
+        """Return bounded visible text and JSON-LD from one safe fetch."""
+        current_url, media_type, decoded = self._fetch_document(url)
         if media_type == "text/plain":
-            return current_url, safe_text(decoded, 1_000_000)
+            return PageEvidence(
+                final_url=current_url,
+                visible_text=safe_text(decoded, 1_000_000),
+            )
 
-        parser = _VisibleTextParser()
+        text_parser = _VisibleTextParser()
+        json_ld_parser = _JsonLdParser()
         try:
-            parser.feed(decoded)
-            parser.close()
+            text_parser.feed(decoded)
+            text_parser.close()
+            json_ld_parser.feed(decoded)
+            json_ld_parser.close()
         except Exception as error:
             raise WebsiteVerificationError("invalid_html") from error
 
-        return current_url, safe_text(parser.text(), 1_000_000)
+        return PageEvidence(
+            final_url=current_url,
+            visible_text=safe_text(text_parser.text(), 1_000_000),
+            json_ld=tuple(json_ld_parser.scripts),
+        )
+
+    def _fetch_text(self, initial_url: str) -> tuple[str, str]:
+        evidence = self.read_page_evidence(initial_url)
+        return evidence.final_url, evidence.visible_text
 
     def _fetch_document(self, initial_url: str) -> tuple[str, str, str]:
         initial_url = normalize_public_url(initial_url)

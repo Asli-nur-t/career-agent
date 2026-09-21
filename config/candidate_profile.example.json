@@ -37,6 +37,10 @@
     "İstanbul",
     "Kocaeli"
   ],
+  "preferred_remote_locations": [
+    "Türkiye",
+    "Turkey"
+  ],
   "excluded_locations": [],
   "allowed_work_modes": [
     "remote",

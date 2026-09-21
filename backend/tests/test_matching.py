@@ -136,6 +136,90 @@ def test_unknown_location_is_reviewable_not_silently_rejected() -> None:
     assert "location_unknown" in result.risk_flags
 
 
+def test_remote_location_must_be_eligible_when_explicit() -> None:
+    strict = CandidateProfileSpec(
+        label="strict-remote",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+        preferred_locations=["İstanbul"],
+        preferred_remote_locations=["Türkiye", "Turkey"],
+        allowed_work_modes=["remote"],
+        location_filter_mode="require",
+        remote_allowed=True,
+    )
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    us_only = score_job(
+        strict,
+        JobMatchInput(
+            title="AI Engineer",
+            description_text="Python",
+            location="Texas, United States",
+            work_mode="remote",
+            published_at=now,
+        ),
+        now=now,
+    )
+    turkey = score_job(
+        strict,
+        JobMatchInput(
+            title="AI Engineer",
+            description_text="Python",
+            location="Turkey",
+            work_mode="remote",
+            published_at=now,
+        ),
+        now=now,
+    )
+    unknown = score_job(
+        strict,
+        JobMatchInput(
+            title="AI Engineer",
+            description_text="Python",
+            work_mode="remote",
+            published_at=now,
+        ),
+        now=now,
+    )
+
+    assert us_only.recommendation == "skip"
+    assert "remote_location_not_eligible" in us_only.risk_flags
+    assert turkey.recommendation != "skip"
+    assert "location:remote:Turkey" in turkey.matched_terms
+    assert unknown.recommendation == "skip"
+    assert "remote_location_unknown" in unknown.risk_flags
+
+
+def test_global_remote_requires_explicit_profile_scope() -> None:
+    turkey_only = CandidateProfileSpec(
+        label="turkey-only",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+        preferred_remote_locations=["Türkiye", "Turkey"],
+        allowed_work_modes=["remote"],
+        location_filter_mode="require",
+        remote_allowed=True,
+    )
+    global_profile = turkey_only.model_copy(
+        update={"preferred_remote_locations": ["Worldwide"]}
+    )
+    job = JobMatchInput(
+        title="AI Engineer",
+        description_text="Python",
+        location="Worldwide",
+        work_mode="remote",
+        published_at=datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc),
+    )
+
+    rejected = score_job(turkey_only, job)
+    accepted = score_job(global_profile, job)
+
+    assert rejected.recommendation == "skip"
+    assert "remote_location_not_eligible" in rejected.risk_flags
+    assert accepted.recommendation != "skip"
+    assert "location:remote:Worldwide" in accepted.matched_terms
+
+
 def test_senior_excluded_job_is_skipped(profile: CandidateProfileSpec) -> None:
     result = score_job(
         profile,

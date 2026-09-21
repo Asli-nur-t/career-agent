@@ -573,7 +573,8 @@ class JobBoardCandidate(Base):
         ),
         CheckConstraint(
             "provider IN "
-            "('linkedin', 'kariyer', 'indeed', 'glassdoor')",
+            "('linkedin', 'kariyer', 'indeed', 'glassdoor', "
+            "'greenhouse', 'lever', 'ashby')",
             name="ck_job_board_candidates_provider",
         ),
         CheckConstraint(
@@ -764,6 +765,10 @@ class CandidateProfile(Base):
             name="ck_candidate_profiles_locations_array",
         ),
         CheckConstraint(
+            "jsonb_typeof(preferred_remote_locations) = 'array'",
+            name="ck_candidate_profiles_remote_locations_array",
+        ),
+        CheckConstraint(
             "jsonb_typeof(excluded_locations) = 'array'",
             name="ck_candidate_profiles_excluded_locations_array",
         ),
@@ -786,6 +791,29 @@ class CandidateProfile(Base):
         CheckConstraint(
             "max_years_experience BETWEEN 0 AND 50",
             name="ck_candidate_profiles_max_experience",
+        ),
+        CheckConstraint(
+            "job_search_last_outcome IS NULL OR "
+            "job_search_last_outcome IN "
+            "('candidates_found', 'no_results', 'error')",
+            name="ck_candidate_profiles_job_search_outcome",
+        ),
+        CheckConstraint(
+            "job_search_consecutive_failures BETWEEN 0 AND 1000",
+            name="ck_candidate_profiles_job_search_failure_count",
+        ),
+        CheckConstraint(
+            "job_search_candidate_count BETWEEN 0 AND 1000",
+            name="ck_candidate_profiles_job_search_candidate_count",
+        ),
+        CheckConstraint(
+            "job_search_profile_hash IS NULL OR "
+            "char_length(job_search_profile_hash) = 64",
+            name="ck_candidate_profiles_job_search_hash_length",
+        ),
+        Index(
+            "ix_candidate_profiles_job_search_due",
+            "job_search_next_check_at",
         ),
     )
 
@@ -820,6 +848,12 @@ class CandidateProfile(Base):
         nullable=False,
     )
     preferred_locations: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    preferred_remote_locations: Mapped[list[str]] = mapped_column(
         JSONB,
         default=list,
         server_default=text("'[]'::jsonb"),
@@ -867,6 +901,29 @@ class CandidateProfile(Base):
         server_default=text("true"),
         nullable=False,
     )
+    job_search_last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    job_search_next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    job_search_last_outcome: Mapped[str | None] = mapped_column(String(30))
+    job_search_last_error_code: Mapped[str | None] = mapped_column(
+        String(80)
+    )
+    job_search_consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    job_search_candidate_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    job_search_profile_hash: Mapped[str | None] = mapped_column(String(64))
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
