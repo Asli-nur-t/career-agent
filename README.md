@@ -1,5 +1,46 @@
 # career-agent
 
+## Yerel operatör arayüzü
+
+Operatör API'si varsayılan olarak kapalıdır. En az 32 karakterlik rastgele bir
+anahtar üretip `.env` dosyasındaki `OPERATOR_API_TOKEN` alanına yazın. Anahtarı
+Git'e eklemeyin veya komut geçmişine açık metin olarak yapıştırmayın:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+Backend'i yalnızca loopback arayüzünde başlatın:
+
+```bash
+PYTHONPATH=backend python -m uvicorn app.main:app \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+İkinci terminalde React/TypeScript arayüzünü başlatın:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Arayüz `http://127.0.0.1:5173` adresindedir. Operatör anahtarı URL'ye,
+`localStorage` alanına veya repoya yazılmaz; yalnızca açık sekmenin belleğinde
+tutulur. `/operator` altındaki tüm endpoint'ler sabit zamanlı token kontrolüyle
+korunur. CORS yalnızca yerel Vite originlerine, gerekli `GET`/`POST`
+metotlarına ve sınırlı header kümesine izin verir. İlan onayı ayrıca ilanın
+tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerektirir.
+
+Frontend tip kontrolü ve production build doğrulaması:
+
+```bash
+cd frontend
+npm run typecheck
+npm run build
+```
+
 ## Testler
 
 Geliştirme bağımlılıklarını bir kez kurun ve testleri pytest ile çalıştırın:
@@ -11,9 +52,10 @@ python -m pytest
 
 Mevcut `unittest.TestCase` testleri pytest tarafından doğrudan toplanır; yeni
 testler pytest işlevleri ve fixture'larıyla yazılabilir. `main` dalına yapılan
-her push ve her pull request, Python 3.14 üzerinde derleme, test ve coverage
-raporunu GitHub Actions içinde otomatik çalıştırır. Workflow herhangi bir API
-anahtarı veya veritabanı parolası kullanmaz.
+her push ve her pull request, Python 3.14 test ve coverage raporuna ek olarak
+Node.js 24 üzerinde frontend tip kontrolü ve production build işlemini GitHub
+Actions içinde otomatik çalıştırır. Workflow herhangi bir API anahtarı veya
+veritabanı parolası kullanmaz.
 
 ## Kariyer kaynaklarını keşfetme
 

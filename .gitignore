@@ -219,6 +219,8 @@ __marimo__/
 
 # Career Agent: local environments and private data
 .venv/
+node_modules/
+*.tsbuildinfo
 .env
 .env.*
 !.env.example
