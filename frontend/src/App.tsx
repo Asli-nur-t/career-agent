@@ -336,7 +336,7 @@ export default function App() {
 
   async function startSearch() {
     if (!token || !profile || searchRunning || searchStarting) return;
-    if (!window.confirm("En fazla 6 harici arama sorgusu çalıştırılsın mı?")) return;
+    if (!window.confirm("En fazla 6 arama sorgusu ve 20 ilan aktiflik kontrolü çalıştırılsın mı?")) return;
     setSearchStarting(true); setError(null);
     try {
       setSearchRun(await startProfileSearch(token, profile));
@@ -399,7 +399,14 @@ export default function App() {
                   </div>
                   {searchRunning && <div className="search-progress"><i /></div>}
                   {searchRun?.status === "succeeded" && (
-                    <p>{searchRun.result.raw_result_count ?? 0} sonuç tarandı · {searchRun.result.candidate_count ?? 0} aday kaydı güncellendi</p>
+                    <div className="search-result-grid">
+                      <span><b>{searchRun.result.raw_result_count ?? 0}</b> tarandı</span>
+                      <span><b>{searchRun.result.matched_candidate_count ?? 0}</b> profile uydu</span>
+                      <span><b>{searchRun.result.activity_counts?.active ?? 0}</b> aktif doğrulandı</span>
+                      <span><b>{searchRun.result.activity_counts?.closed ?? 0}</b> kapalı elendi</span>
+                      <span><b>{searchRun.result.activity_counts?.unknown ?? 0}</b> belirsiz kaldı</span>
+                      <span><b>{searchRun.result.candidate_count ?? 0}</b> kayıt güncellendi</span>
+                    </div>
                   )}
                   {searchRun?.status === "failed" && <p>{errorMessage(new ApiError(500, searchRun.error_code ?? "search_failed"))}</p>}
                   <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting}>

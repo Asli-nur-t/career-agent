@@ -379,6 +379,9 @@ def _search_run_response(
         "refreshed_candidates",
         "reconciled_candidate_count",
         "exclusion_counts",
+        "activity_checked_count",
+        "activity_changed_count",
+        "activity_counts",
     }
     result = {key: raw[key] for key in allowed_result_keys if key in raw}
     return SearchRunResponse(

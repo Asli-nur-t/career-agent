@@ -35,10 +35,16 @@ tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerekti
 
 Ana sayfadaki **Şimdi ilan ara** düğmesi profil bazlı ilan keşfini arka planda
 başlatır. Harici arama kotası kullanılmadan önce açık onay ister ve her çalışma
-en fazla altı sorguyla sınırlıdır. Aynı profil için yalnızca bir çalışma
+en fazla altı sorguyla sınırlıdır. Aramada profile uyan fakat aktifliği henüz
+kanıtlanmamış en fazla 20 ilan, SSRF korumalı okuyucuyla ve en fazla dört
+eşzamanlı istekle ayrıca denetlenir. Denetim yalnızca seçili profile ait
+`needs_review`/`unknown` kayıtlarını günceller; onaylanmış, reddedilmiş veya
+başka profile ait kayıtları değiştirmez. Aynı profil için yalnızca bir çalışma
 `queued`/`running` durumunda olabilir. Çalışma durumu ile güvenli özet sayıları
 veritabanında saklanır; arayüz iki saniyede bir durumu yeniler ve tamamlanınca
-ilan kuyruğunu tekrar yükler. Backend çalışma sırasında kapanırsa yarım kalan
+ilan kuyruğunu tekrar yükler. Panel taranan, profile uyan, aktif doğrulanan,
+kapalı elenen ve belirsiz kalan sonuç sayılarını ayrı gösterir. Backend çalışma
+sırasında kapanırsa yarım kalan
 kayıt bir sonraki başlatma denemesinde 30 dakika sonra güvenli biçimde
 `worker_interrupted` olarak sonlandırılır.
 

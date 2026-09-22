@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from sqlalchemy.dialects import postgresql
+
 from app.audit_job_board_activity import audit_job_board_activity
 from app.job_boards import JobBoardActivity
 
@@ -48,3 +50,26 @@ def test_activity_audit_reextracts_metadata_without_mutating_dry_run() -> None:
     assert result["sample"][0]["location"] == "Azerbaijan"
     assert result["sample"][0]["company_name"] == "Acme"
     session.commit.assert_not_called()
+
+
+def test_activity_audit_can_scope_unknown_candidates_to_profile() -> None:
+    profile_id = uuid4()
+    with patch("app.audit_job_board_activity.Session") as session_class:
+        session = session_class.return_value.__enter__.return_value
+        session.scalars.return_value.all.return_value = []
+        result = audit_job_board_activity(
+            object(),
+            verifier=SimpleNamespace(),
+            limit=20,
+            workers=4,
+            apply=True,
+            profile_id=profile_id,
+            only_unverified=True,
+        )
+
+    statement = session.scalars.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert "activity_state" in str(compiled)
+    assert "@>" in str(compiled)
+    assert str(profile_id) in str(compiled.params.values())
+    assert result["checked_count"] == 0

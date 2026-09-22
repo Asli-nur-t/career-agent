@@ -111,11 +111,25 @@ def audit_job_board_activity(
     limit: int,
     workers: int,
     apply: bool,
+    profile_id: UUID | None = None,
+    only_unverified: bool = False,
 ) -> dict[str, object]:
+    conditions = [JobBoardCandidate.status == "needs_review"]
+    if profile_id is not None:
+        conditions.append(
+            JobBoardCandidate.evidence.contains([
+                {
+                    "kind": "profile_search_result",
+                    "profile_id": str(profile_id),
+                }
+            ])
+        )
+    if only_unverified:
+        conditions.append(JobBoardCandidate.activity_state == "unknown")
     with Session(database) as session:
         rows = session.scalars(
             select(JobBoardCandidate)
-            .where(JobBoardCandidate.status == "needs_review")
+            .where(*conditions)
             .order_by(
                 JobBoardCandidate.last_seen_at.desc(),
                 JobBoardCandidate.id,

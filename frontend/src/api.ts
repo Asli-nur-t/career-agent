@@ -78,6 +78,13 @@ export type SearchRun = {
     refreshed_candidates?: number;
     reconciled_candidate_count?: number;
     exclusion_counts?: Record<string, number>;
+    activity_checked_count?: number;
+    activity_changed_count?: number;
+    activity_counts?: {
+      active?: number;
+      closed?: number;
+      unknown?: number;
+    };
   };
   error_code: string | null;
   created_at: string;

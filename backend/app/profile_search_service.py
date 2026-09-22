@@ -6,6 +6,7 @@ from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.ats import PublicATSClient
+from app.audit_job_board_activity import audit_job_board_activity
 from app.discover_profile_jobs import (
     discover_profile_candidates,
     load_profile_search_state,
@@ -73,12 +74,21 @@ def run_profile_job_search(
                 minimum_score=minimum_score,
                 delay_seconds=delay_seconds,
             )
-        persisted = persist_profile_candidates(
-            database,
-            profile_id=state.profile_id,
-            profile_hash=profile_hash,
-            candidates=discovery.candidates,
-        )
+            persisted = persist_profile_candidates(
+                database,
+                profile_id=state.profile_id,
+                profile_hash=profile_hash,
+                candidates=discovery.candidates,
+            )
+            activity_audit = audit_job_board_activity(
+                database,
+                verifier=activity_verifier,
+                limit=20,
+                workers=4,
+                apply=True,
+                profile_id=state.profile_id,
+                only_unverified=True,
+            )
         actionable_count = (
             persisted["new_candidates"] + persisted["refreshed_candidates"]
         )
@@ -116,4 +126,7 @@ def run_profile_job_search(
         "refreshed_candidates": persisted["refreshed_candidates"],
         "reconciled_candidate_count": reconciled_count,
         "exclusion_counts": discovery.exclusion_counts or {},
+        "activity_checked_count": activity_audit["checked_count"],
+        "activity_changed_count": activity_audit["changed_count"],
+        "activity_counts": activity_audit["activity_counts"],
     }

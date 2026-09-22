@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -21,3 +22,77 @@ def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
             )
 
     assert caught.value.code == "serper_not_configured"
+
+
+def test_profile_search_audits_only_its_unverified_candidates(monkeypatch) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    profile_id = uuid4()
+    spec = SimpleNamespace(config_hash=lambda: "a" * 64)
+    state = SimpleNamespace(spec=spec, profile_id=profile_id)
+    discovery = SimpleNamespace(
+        queries=("query",),
+        raw_result_count=4,
+        filtered_result_count=2,
+        candidates=(),
+        exclusion_counts={"location_or_policy": 2},
+    )
+    persisted = {
+        "new_candidates": 1,
+        "refreshed_candidates": 0,
+        "suppressed_candidates": 0,
+    }
+    audit = {
+        "checked_count": 1,
+        "changed_count": 1,
+        "activity_counts": {"active": 1, "closed": 0, "unknown": 0},
+    }
+    search_client = MagicMock()
+    ats_client = MagicMock()
+    verifier = MagicMock()
+
+    with (
+        patch(
+            "app.profile_search_service.load_profile_search_state",
+            return_value=state,
+        ),
+        patch(
+            "app.profile_search_service.SerperClient",
+            return_value=search_client,
+        ),
+        patch(
+            "app.profile_search_service.PublicATSClient",
+            return_value=ats_client,
+        ),
+        patch(
+            "app.profile_search_service.JobBoardActivityVerifier",
+            return_value=verifier,
+        ),
+        patch("app.profile_search_service.JobBoardSearchConnector"),
+        patch(
+            "app.profile_search_service.discover_profile_candidates",
+            return_value=discovery,
+        ),
+        patch(
+            "app.profile_search_service.persist_profile_candidates",
+            return_value=persisted,
+        ),
+        patch(
+            "app.profile_search_service.audit_job_board_activity",
+            return_value=audit,
+        ) as audit_call,
+        patch(
+            "app.profile_search_service.reconcile_profile_candidates",
+            return_value=0,
+        ),
+        patch("app.profile_search_service.record_profile_job_search"),
+    ):
+        result = run_profile_job_search(
+            MagicMock(),
+            profile_label="aslinur-default",
+        )
+
+    assert result["activity_counts"]["active"] == 1
+    assert result["activity_checked_count"] == 1
+    assert audit_call.call_args.kwargs["profile_id"] == profile_id
+    assert audit_call.call_args.kwargs["only_unverified"] is True
+    assert audit_call.call_args.kwargs["limit"] == 20
