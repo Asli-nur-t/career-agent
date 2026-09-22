@@ -938,6 +938,50 @@ class CandidateProfile(Base):
     )
 
 
+class ProfileJobSearchRun(Base):
+    __tablename__ = "profile_job_search_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_profile_job_search_runs_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR char_length(btrim(error_code)) > 0",
+            name="ck_profile_job_search_runs_error_not_blank",
+        ),
+        Index(
+            "uq_profile_job_search_runs_active_profile",
+            "profile_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+        Index(
+            "ix_profile_job_search_runs_profile_created",
+            "profile_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="queued", server_default="queued", nullable=False
+    )
+    result: Mapped[dict[str, object]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class JobMatch(Base):
     __tablename__ = "job_matches"
     __table_args__ = (

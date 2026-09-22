@@ -15,6 +15,7 @@ from app.operator_api import (
     load_operator_job_detail,
     load_operator_summary,
 )
+from app.operator_search_runs import SearchAlreadyRunning
 from app.review_job_board_queue import RankedCandidate
 
 
@@ -197,3 +198,90 @@ def test_approval_delegates_to_transactional_review(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
     assert review.call_args.kwargs["confirmed_active"] is True
+
+
+def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    run_id = uuid4()
+    now = datetime.now(timezone.utc)
+    run = SimpleNamespace(
+        id=run_id,
+        status="queued",
+        result={},
+        error_code=None,
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+    )
+    with (
+        patch("app.operator_api.queue_profile_search", return_value=run_id),
+        patch("app.operator_api.load_latest_profile_search", return_value=run),
+        patch("app.operator_api.execute_profile_search_run") as execute,
+    ):
+        response = _client().post(
+            "/operator/search-runs",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "confirmed_external_search": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["run_id"] == str(run_id)
+    execute.assert_called_once()
+
+
+def test_operator_rejects_parallel_profile_search(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    with patch(
+        "app.operator_api.queue_profile_search",
+        side_effect=SearchAlreadyRunning("search_already_running"),
+    ):
+        response = _client().post(
+            "/operator/search-runs",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "confirmed_external_search": True,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == "search_already_running"
+
+
+def test_operator_search_requires_external_request_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().post(
+        "/operator/search-runs",
+        headers=_headers(),
+        json={"profile": "aslinur-default"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_latest_search_exposes_only_allowlisted_result_fields(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    now = datetime.now(timezone.utc)
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="succeeded",
+        result={"candidate_count": 2, "internal_debug": "do-not-return"},
+        error_code=None,
+        created_at=now,
+        started_at=now,
+        finished_at=now,
+    )
+    with patch(
+        "app.operator_api.load_latest_profile_search",
+        return_value=run,
+    ):
+        response = _client().get(
+            "/operator/search-runs/latest?profile=aslinur-default",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"candidate_count": 2}

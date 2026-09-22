@@ -4,13 +4,16 @@ import {
   JobDetail,
   JobItem,
   Profile,
+  SearchRun,
   Summary,
   approveJob,
   getJobDetail,
   getJobs,
   getProfiles,
   getSummary,
+  getLatestProfileSearch,
   rejectJob,
+  startProfileSearch,
 } from "./api";
 
 type View = "overview" | "jobs";
@@ -28,6 +31,12 @@ const labels: Record<string, string> = {
   part_time: "Yarı zamanlı",
   contract: "Sözleşmeli",
   internship: "Staj",
+  queued: "Sırada",
+  running: "Aranıyor",
+  succeeded: "Tamamlandı",
+  failed: "Başarısız",
+  candidates_found: "Aday bulundu",
+  no_results: "Sonuç yok",
 };
 
 function label(value: string): string {
@@ -62,6 +71,11 @@ function errorMessage(error: unknown): string {
       profile_not_found: "Aday profili bulunamadı.",
       database_unavailable: "Veritabanına şu anda ulaşılamıyor.",
       candidate_data_mismatch: "İlan kanıtı güvenli doğrulamadan geçemedi.",
+      search_already_running: "Bu profil için bir arama zaten çalışıyor.",
+      serper_not_configured: "SERPER_API_KEY backend üzerinde yapılandırılmamış.",
+      worker_interrupted: "Önceki arama backend yeniden başladığı için kesildi.",
+      search_failed: "Arama güvenli şekilde sonlandırıldı. Ayrıntılar sunucu logunda.",
+      search_run_unavailable: "Arama kaydı oluşturuldu ancak yeniden okunamadı.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -247,6 +261,8 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [includeUnverified, setIncludeUnverified] = useState(false);
+  const [searchRun, setSearchRun] = useState<SearchRun | null>(null);
+  const [searchStarting, setSearchStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -254,6 +270,7 @@ export default function App() {
     () => profiles.find((item) => item.label === profile) ?? null,
     [profiles, profile],
   );
+  const searchRunning = searchRun?.status === "queued" || searchRun?.status === "running";
 
   const refreshBase = useCallback(async (activeToken: string) => {
     const [summaryData, profileData] = await Promise.all([
@@ -286,6 +303,28 @@ export default function App() {
   }, [token, profile, includeUnverified, refreshJobs]);
 
   useEffect(() => {
+    if (!token || !profile) { setSearchRun(null); return; }
+    let cancelled = false;
+    getLatestProfileSearch(token, profile)
+      .then((run) => { if (!cancelled) setSearchRun(run); })
+      .catch((caught) => { if (!cancelled) setError(errorMessage(caught)); });
+    return () => { cancelled = true; };
+  }, [token, profile]);
+
+  useEffect(() => {
+    if (!token || !profile || !searchRunning) return;
+    const timer = window.setInterval(() => {
+      getLatestProfileSearch(token, profile).then(async (run) => {
+        setSearchRun(run);
+        if (run && (run.status === "succeeded" || run.status === "failed")) {
+          await Promise.all([refreshBase(token), refreshJobs()]);
+        }
+      }).catch((caught) => setError(errorMessage(caught)));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [token, profile, searchRunning, refreshBase, refreshJobs]);
+
+  useEffect(() => {
     if (!token || !selected) { setDetail(null); return; }
     getJobDetail(token, selected).then(setDetail).catch((caught) => setError(errorMessage(caught)));
   }, [token, selected]);
@@ -293,6 +332,23 @@ export default function App() {
   async function afterReview() {
     setDetail(null); setSelected(null);
     await Promise.all([refreshBase(token), refreshJobs()]);
+  }
+
+  async function startSearch() {
+    if (!token || !profile || searchRunning || searchStarting) return;
+    if (!window.confirm("En fazla 6 harici arama sorgusu çalıştırılsın mı?")) return;
+    setSearchStarting(true); setError(null);
+    try {
+      setSearchRun(await startProfileSearch(token, profile));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "search_already_running") {
+        setSearchRun(await getLatestProfileSearch(token, profile));
+      } else {
+        setError(errorMessage(caught));
+      }
+    } finally {
+      setSearchStarting(false);
+    }
   }
 
   if (!token) return <AuthScreen onConnect={setToken} />;
@@ -336,6 +392,20 @@ export default function App() {
                 <p className="eyebrow">AKTİF PROFİL</p><h2>{selectedProfile?.label ?? "Profil yok"}</h2>
                 <div className="role-cloud">{selectedProfile?.target_roles.map((role) => <span key={role}>{role}</span>)}</div>
                 <dl><div><dt>Son arama</dt><dd>{selectedProfile?.last_search_outcome ? label(selectedProfile.last_search_outcome) : "Henüz yok"}</dd></div><div><dt>Sonraki kontrol</dt><dd>{formatDate(selectedProfile?.next_search_at ?? null)}</dd></div><div><dt>Aktif kaynak</dt><dd>{summary?.active_sources ?? 0}</dd></div></dl>
+                <div className={`search-run ${searchRun?.status ?? "idle"}`}>
+                  <div>
+                    <span>Profil ilan araması</span>
+                    <strong>{searchRun ? label(searchRun.status) : "Hazır"}</strong>
+                  </div>
+                  {searchRunning && <div className="search-progress"><i /></div>}
+                  {searchRun?.status === "succeeded" && (
+                    <p>{searchRun.result.raw_result_count ?? 0} sonuç tarandı · {searchRun.result.candidate_count ?? 0} aday kaydı güncellendi</p>
+                  )}
+                  {searchRun?.status === "failed" && <p>{errorMessage(new ApiError(500, searchRun.error_code ?? "search_failed"))}</p>}
+                  <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting}>
+                    {searchRunning ? "Arama sürüyor…" : "Şimdi ilan ara"}
+                  </button>
+                </div>
               </article>
             </section>
           </div>

@@ -64,6 +64,27 @@ export type JobDetail = {
   last_seen_at: string;
 };
 
+export type SearchRun = {
+  run_id: string;
+  profile: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  result: {
+    query_count?: number;
+    raw_result_count?: number;
+    excluded_result_count?: number;
+    matched_candidate_count?: number;
+    candidate_count?: number;
+    new_candidates?: number;
+    refreshed_candidates?: number;
+    reconciled_candidate_count?: number;
+    exclusion_counts?: Record<string, number>;
+  };
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 type ErrorPayload = {
   detail?: { error_code?: string } | string;
 };
@@ -136,6 +157,24 @@ export function getJobs(
     include_unverified: String(includeUnverified),
   });
   return request(token, `/operator/jobs?${query.toString()}`);
+}
+
+export function startProfileSearch(
+  token: string,
+  profile: string,
+): Promise<SearchRun> {
+  return request(token, "/operator/search-runs", {
+    method: "POST",
+    body: JSON.stringify({ profile, confirmed_external_search: true }),
+  });
+}
+
+export function getLatestProfileSearch(
+  token: string,
+  profile: string,
+): Promise<SearchRun | null> {
+  const query = new URLSearchParams({ profile });
+  return request(token, `/operator/search-runs/latest?${query.toString()}`);
 }
 
 export function getJobDetail(token: string, id: string): Promise<JobDetail> {

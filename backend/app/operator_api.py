@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,8 +26,15 @@ from app.models import (
     JobBoardCandidate,
     JobMatch,
     JobPosting,
+    ProfileJobSearchRun,
 )
 from app.operator_auth import require_operator_token
+from app.operator_search_runs import (
+    SearchAlreadyRunning,
+    execute_profile_search_run,
+    load_latest_profile_search,
+    queue_profile_search,
+)
 from app.review_job_board_candidate import review_job_board_candidate
 from app.review_job_board_queue import RankedCandidate, load_queue
 
@@ -114,6 +121,24 @@ class RejectJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     confirmed_rejection: Literal[True]
+
+
+class StartSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+    confirmed_external_search: Literal[True]
+
+
+class SearchRunResponse(BaseModel):
+    run_id: UUID
+    profile: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    result: dict[str, object]
+    error_code: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
 
 
 class JobReviewResponse(BaseModel):
@@ -338,6 +363,36 @@ def _review_error(error: ValueError) -> HTTPException:
     )
 
 
+def _search_run_response(
+    run: ProfileJobSearchRun,
+    *,
+    profile: str,
+) -> SearchRunResponse:
+    raw = run.result if isinstance(run.result, dict) else {}
+    allowed_result_keys = {
+        "query_count",
+        "raw_result_count",
+        "excluded_result_count",
+        "matched_candidate_count",
+        "candidate_count",
+        "new_candidates",
+        "refreshed_candidates",
+        "reconciled_candidate_count",
+        "exclusion_counts",
+    }
+    result = {key: raw[key] for key in allowed_result_keys if key in raw}
+    return SearchRunResponse(
+        run_id=run.id,
+        profile=profile,
+        status=run.status,
+        result=result,
+        error_code=(safe_text(run.error_code, 80) if run.error_code else None),
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+    )
+
+
 @router.get("/summary", response_model=OperatorSummary)
 def operator_summary() -> OperatorSummary:
     try:
@@ -358,6 +413,61 @@ def operator_profiles() -> list[OperatorProfileItem]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "database_unavailable"},
         ) from None
+
+
+@router.post(
+    "/search-runs",
+    response_model=SearchRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def operator_start_search(
+    request: StartSearchRequest,
+    background_tasks: BackgroundTasks,
+) -> SearchRunResponse:
+    try:
+        run_id = queue_profile_search(engine, profile_label=request.profile)
+        run = load_latest_profile_search(engine, profile_label=request.profile)
+    except SearchAlreadyRunning:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "search_already_running"},
+        ) from None
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": str(error)},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if run is None or run.id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "search_run_unavailable"},
+        )
+    background_tasks.add_task(execute_profile_search_run, engine, run_id)
+    return _search_run_response(run, profile=request.profile)
+
+
+@router.get(
+    "/search-runs/latest",
+    response_model=SearchRunResponse | None,
+)
+def operator_latest_search(
+    profile: Annotated[str, Query(min_length=1, max_length=100)],
+) -> SearchRunResponse | None:
+    try:
+        run = load_latest_profile_search(engine, profile_label=profile)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if run is None:
+        return None
+    return _search_run_response(run, profile=profile)
 
 
 @router.get("/jobs", response_model=OperatorJobPage)

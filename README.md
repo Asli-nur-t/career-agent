@@ -33,6 +33,21 @@ korunur. CORS yalnızca yerel Vite originlerine, gerekli `GET`/`POST`
 metotlarına ve sınırlı header kümesine izin verir. İlan onayı ayrıca ilanın
 tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerektirir.
 
+Ana sayfadaki **Şimdi ilan ara** düğmesi profil bazlı ilan keşfini arka planda
+başlatır. Harici arama kotası kullanılmadan önce açık onay ister ve her çalışma
+en fazla altı sorguyla sınırlıdır. Aynı profil için yalnızca bir çalışma
+`queued`/`running` durumunda olabilir. Çalışma durumu ile güvenli özet sayıları
+veritabanında saklanır; arayüz iki saniyede bir durumu yeniler ve tamamlanınca
+ilan kuyruğunu tekrar yükler. Backend çalışma sırasında kapanırsa yarım kalan
+kayıt bir sonraki başlatma denemesinde 30 dakika sonra güvenli biçimde
+`worker_interrupted` olarak sonlandırılır.
+
+Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
+
+```bash
+PYTHONPATH=backend python -m alembic upgrade head
+```
+
 Frontend tip kontrolü ve production build doğrulaması:
 
 ```bash
