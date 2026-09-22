@@ -14,6 +14,32 @@ LEGAL_SUFFIXES = (
     re.compile(r"\s+A\.?\s*Ş\.?$", re.IGNORECASE),
 )
 
+LINKEDIN_COMPANY_HOST = re.compile(
+    r"(?:(?:www|[a-z]{2})\.)?linkedin\.com\Z"
+)
+LINKEDIN_COMPANY_SLUG = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9-]{0,99}\Z"
+)
+DENIED_OFFICIAL_WEBSITE_DOMAINS = {
+    "apps.apple.com",
+    "crunchbase.com",
+    "entertech.com.tr",
+    "facebook.com",
+    "find.com.tr",
+    "indeed.com",
+    "instagram.com",
+    "kamubis.com",
+    "kariyer.net",
+    "linkedin.com",
+    "mukellef.info",
+    "play.google.com",
+    "rocketreach.co",
+    "sayfa.istanbul",
+    "twitter.com",
+    "x.com",
+    "youtube.com",
+}
+
 
 def safe_text(value: object, max_length: int) -> str:
     text = " ".join(str(value or "").split())
@@ -110,6 +136,43 @@ def normalize_public_url(value: object) -> str:
             "",
         )
     )
+
+
+def _hostname_belongs_to(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def is_denied_official_website(value: object) -> bool:
+    try:
+        normalized = normalize_public_url(value)
+    except ValueError:
+        return True
+    hostname = (urlsplit(normalized).hostname or "").lower()
+    return any(
+        _hostname_belongs_to(hostname, domain)
+        for domain in DENIED_OFFICIAL_WEBSITE_DOMAINS
+    )
+
+
+def normalize_linkedin_company_url(value: object) -> str:
+    """Validate and canonicalize a LinkedIn company profile URL."""
+    normalized = normalize_public_url(value)
+    parsed = urlsplit(normalized)
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme != "https"
+        or LINKEDIN_COMPANY_HOST.fullmatch(hostname) is None
+    ):
+        raise ValueError("LinkedIn company URL is invalid.")
+
+    segments = parsed.path.strip("/").split("/")
+    if len(segments) < 2 or segments[0].lower() != "company":
+        raise ValueError("LinkedIn company URL is invalid.")
+    slug = segments[1]
+    if LINKEDIN_COMPANY_SLUG.fullmatch(slug) is None:
+        raise ValueError("LinkedIn company URL is invalid.")
+
+    return f"https://www.linkedin.com/company/{slug}/"
 
 
 def allowed_candidate_urls(

@@ -242,6 +242,64 @@ class OllamaEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(validated.careers_url_candidate, careers_url)
 
+    def test_linkedin_post_cannot_be_company_profile(self) -> None:
+        linkedin_post = "https://www.linkedin.com/posts/acme_open-role-1"
+        results = [
+            *self.results,
+            SearchResult(
+                title="Acme post",
+                url=linkedin_post,
+                snippet="Company update",
+                position=2,
+            ),
+        ]
+        assessment = CompanyAssessment(
+            company_name=self.company_name,
+            brand_name="4ARC",
+            official_website_candidate="https://www.4arctech.com/",
+            careers_url_candidate=None,
+            official_linkedin_candidate=linkedin_post,
+            confidence="high",
+            status="candidate_found",
+            evidence=[linkedin_post],
+            reason="LinkedIn kanıtı bulundu.",
+        )
+
+        with self.assertRaises(EvaluationError) as raised:
+            validate_assessment(self.company_name, results, assessment)
+
+        self.assertEqual(
+            raised.exception.code,
+            "invalid_linkedin_company_url",
+        )
+
+    def test_directory_cannot_be_official_website(self) -> None:
+        directory_url = "https://entertech.com.tr/firmalar/acme"
+        assessment = CompanyAssessment(
+            company_name=self.company_name,
+            brand_name="Acme",
+            official_website_candidate=directory_url,
+            careers_url_candidate=None,
+            official_linkedin_candidate=None,
+            confidence="medium",
+            status="candidate_found",
+            evidence=[directory_url],
+            reason="Dizin sonucu bulundu.",
+        )
+        results = [
+            SearchResult(
+                title="Acme",
+                url=directory_url,
+                snippet="Teknokent dizini",
+                position=1,
+            )
+        ]
+
+        with self.assertRaises(EvaluationError) as raised:
+            validate_assessment(self.company_name, results, assessment)
+
+        self.assertEqual(raised.exception.code, "denied_official_domain")
+
 
 if __name__ == "__main__":
     unittest.main()

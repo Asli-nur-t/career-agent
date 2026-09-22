@@ -6,26 +6,14 @@ from pydantic import ValidationError
 
 from app.discovery.safety import (
     allowed_candidate_urls,
+    is_denied_official_website,
+    normalize_linkedin_company_url,
     normalize_public_url,
     safe_text,
 )
 from app.discovery.schemas import CompanyAssessment, SearchResult
 
 
-DENIED_OFFICIAL_WEBSITE_DOMAINS = {
-    "apps.apple.com",
-    "crunchbase.com",
-    "facebook.com",
-    "instagram.com",
-    "indeed.com",
-    "kariyer.net",
-    "linkedin.com",
-    "play.google.com",
-    "rocketreach.co",
-    "twitter.com",
-    "x.com",
-    "youtube.com",
-}
 ALLOWED_EXTERNAL_CAREERS_DOMAINS = {
     "ashbyhq.com",
     "greenhouse.io",
@@ -67,19 +55,6 @@ def company_assessment_output_schema() -> dict[str, object]:
 
 def _hostname_belongs_to(hostname: str, domain: str) -> bool:
     return hostname == domain or hostname.endswith(f".{domain}")
-
-
-def _is_denied_official_website(url: str) -> bool:
-    hostname = (urlsplit(url).hostname or "").lower()
-    return any(
-        _hostname_belongs_to(hostname, domain)
-        for domain in DENIED_OFFICIAL_WEBSITE_DOMAINS
-    )
-
-
-def _is_linkedin_url(url: str) -> bool:
-    hostname = (urlsplit(url).hostname or "").lower()
-    return _hostname_belongs_to(hostname, "linkedin.com")
 
 
 def _without_www(hostname: str) -> str:
@@ -204,16 +179,19 @@ def validate_assessment(
             raise EvaluationError("invalid_url") from error
         if normalized not in allowed_urls:
             raise EvaluationError("invented_url")
+        if field_name == "official_linkedin_candidate":
+            try:
+                normalized = normalize_linkedin_company_url(normalized)
+            except ValueError as error:
+                raise EvaluationError("invalid_linkedin_company_url") from error
         normalized_updates[field_name] = normalized
 
     website = normalized_updates["official_website_candidate"]
     careers = normalized_updates["careers_url_candidate"]
     linkedin = normalized_updates["official_linkedin_candidate"]
 
-    if website and _is_denied_official_website(str(website)):
+    if website and is_denied_official_website(str(website)):
         raise EvaluationError("denied_official_domain")
-    if linkedin and not _is_linkedin_url(str(linkedin)):
-        raise EvaluationError("invalid_linkedin_domain")
     if careers and not website:
         raise EvaluationError("careers_without_website")
     if careers and website and not _is_allowed_careers_url(

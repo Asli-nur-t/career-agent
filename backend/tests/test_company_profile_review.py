@@ -78,6 +78,25 @@ def test_approval_rejects_spoofed_linkedin_url() -> None:
     session.commit.assert_not_called()
 
 
+def test_approval_rejects_directory_as_official_website() -> None:
+    session, company, profile = _review_session(linkedin_url=None)
+    profile.official_website_url = "https://entertech.com.tr/firmalar/acme"
+
+    with patch("app.review_company_profile.Session", return_value=session):
+        with pytest.raises(
+            ValueError,
+            match="profile_official_website_denied",
+        ):
+            review_company_profile(
+                MagicMock(),
+                company_id=company.id,
+                approve=True,
+                confirmed_identity=True,
+            )
+
+    session.commit.assert_not_called()
+
+
 def test_verified_profile_cannot_be_rejected() -> None:
     session, company, _ = _review_session(
         linkedin_url="https://www.linkedin.com/company/acme/",

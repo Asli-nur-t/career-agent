@@ -10,8 +10,11 @@ from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.discovery.safety import normalize_public_url
-from app.list_company_job_pages import linkedin_company_jobs_url
+from app.discovery.safety import (
+    is_denied_official_website,
+    normalize_linkedin_company_url,
+    normalize_public_url,
+)
 from app.models import Company, CompanyWebProfile
 
 
@@ -50,13 +53,17 @@ def _validated_urls(
         )
     except ValueError as error:
         raise ValueError("profile_url_invalid") from error
+    if is_denied_official_website(website_url):
+        raise ValueError("profile_official_website_denied")
 
     linkedin_url: str | None = None
     if profile.official_linkedin_url:
-        jobs_url = linkedin_company_jobs_url(profile.official_linkedin_url)
-        if jobs_url is None:
+        try:
+            linkedin_url = normalize_linkedin_company_url(
+                profile.official_linkedin_url
+            )
+        except ValueError:
             raise ValueError("profile_linkedin_url_invalid")
-        linkedin_url = jobs_url.removesuffix("jobs/")
     return website_url, careers_url, linkedin_url
 
 

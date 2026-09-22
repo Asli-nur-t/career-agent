@@ -2,21 +2,15 @@
 
 import argparse
 import json
-import re
 from dataclasses import asdict, dataclass
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.discovery.safety import normalize_public_url, safe_text
+from app.discovery.safety import normalize_linkedin_company_url, safe_text
 from app.models import Company, CompanyWebProfile
-
-
-LINKEDIN_HOST = re.compile(r"(?:(?:www|[a-z]{2})\.)?linkedin\.com\Z")
-LINKEDIN_COMPANY_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}\Z")
 
 
 @dataclass(frozen=True)
@@ -41,30 +35,11 @@ def _bounded_limit(value: str) -> int:
 
 def linkedin_company_jobs_url(value: object) -> str | None:
     """Return a canonical LinkedIn jobs page without requesting LinkedIn."""
-    if not isinstance(value, str):
-        return None
-    raw_url = value.strip()
-    if not raw_url or len(raw_url) > 2048:
-        return None
-
     try:
-        normalized = normalize_public_url(raw_url)
-        parsed = urlsplit(normalized)
+        company_url = normalize_linkedin_company_url(value)
     except ValueError:
         return None
-
-    hostname = (parsed.hostname or "").rstrip(".").lower()
-    if parsed.scheme != "https" or LINKEDIN_HOST.fullmatch(hostname) is None:
-        return None
-
-    segments = parsed.path.strip("/").split("/")
-    if len(segments) < 2 or segments[0].lower() != "company":
-        return None
-    slug = segments[1]
-    if LINKEDIN_COMPANY_SLUG.fullmatch(slug) is None:
-        return None
-
-    return f"https://www.linkedin.com/company/{slug}/jobs/"
+    return f"{company_url}jobs/"
 
 
 def load_company_job_pages(
