@@ -104,6 +104,27 @@ otomatik istek göndermeden şirketin güncel ilan sekmesine giden güvenli
 bağlantıları listelemek için:
 
 ```bash
+PYTHONPATH=backend python -m app.review_company_profile --limit 25
+```
+
+Komut `candidate_found` ve `needs_review` şirket profillerini salt okunur
+biçimde listeler. Resmî siteyi, şirket unvanını ve varsa LinkedIn profilini
+tarayıcıda elle doğruladıktan sonra profili onaylamak için:
+
+```bash
+PYTHONPATH=backend python -m app.review_company_profile \
+  --company-id UUID \
+  --approve \
+  --confirmed-identity
+```
+
+URL'ler onay sırasında tekrar allowlist ve genel ağ kontrollerinden geçirilir.
+Onay açık kimlik doğrulaması olmadan yapılmaz, karar kanıta eklenir ve mevcut
+doğrulanmış profil yanlışlıkla reddedilemez.
+
+Doğrulanmış profillerin ilan bağlantılarını üretmek için:
+
+```bash
 PYTHONPATH=backend python -m app.list_company_job_pages \
   --missing-careers-only \
   --limit 100
