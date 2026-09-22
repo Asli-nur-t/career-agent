@@ -64,6 +64,21 @@ export type JobDetail = {
   last_seen_at: string;
 };
 
+export type SearchRunCandidate = {
+  candidate_id: string;
+  provider: string;
+  title: string;
+  company_name: string;
+  listing_url: string;
+  location: string | null;
+  score: number;
+  recommendation: string;
+  status: string;
+  activity_state: string;
+  activity_code: string;
+  disposition: string;
+};
+
 export type SearchRun = {
   run_id: string;
   profile: string;
@@ -76,6 +91,7 @@ export type SearchRun = {
     candidate_count?: number;
     new_candidates?: number;
     refreshed_candidates?: number;
+    suppressed_candidates?: number;
     reconciled_candidate_count?: number;
     exclusion_counts?: Record<string, number>;
     activity_checked_count?: number;
@@ -85,6 +101,7 @@ export type SearchRun = {
       closed?: number;
       unknown?: number;
     };
+    matched_candidates?: SearchRunCandidate[];
   };
   error_code: string | null;
   created_at: string;

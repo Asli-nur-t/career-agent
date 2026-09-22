@@ -45,6 +45,17 @@ router = APIRouter(
     dependencies=[Depends(require_operator_token)],
 )
 
+SEARCH_DISPOSITIONS = {
+    "active_review",
+    "activity_unknown",
+    "already_approved",
+    "closed",
+    "location_or_policy",
+    "location_unknown",
+    "profile_filtered",
+    "previously_rejected",
+}
+
 
 class OperatorSummary(BaseModel):
     companies: int
@@ -377,6 +388,7 @@ def _search_run_response(
         "candidate_count",
         "new_candidates",
         "refreshed_candidates",
+        "suppressed_candidates",
         "reconciled_candidate_count",
         "exclusion_counts",
         "activity_checked_count",
@@ -384,6 +396,52 @@ def _search_run_response(
         "activity_counts",
     }
     result = {key: raw[key] for key in allowed_result_keys if key in raw}
+    matched_candidates: list[dict[str, object]] = []
+    raw_candidates = raw.get("matched_candidates")
+    if isinstance(raw_candidates, list):
+        for item in raw_candidates[:100]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                candidate_id = str(UUID(str(item.get("candidate_id", ""))))
+                title = safe_text(item.get("title"), 500)
+                provider = safe_text(item.get("provider"), 30)
+                listing_url = _validated_listing_url(
+                    provider=provider,
+                    title=title,
+                    listing_url=safe_text(item.get("listing_url"), 2048),
+                )
+                score = int(item.get("score", 0))
+            except (TypeError, ValueError):
+                continue
+            disposition = safe_text(item.get("disposition"), 80)
+            if disposition not in SEARCH_DISPOSITIONS:
+                disposition = "profile_filtered"
+            matched_candidates.append({
+                "candidate_id": candidate_id,
+                "provider": provider,
+                "title": title,
+                "company_name": safe_text(item.get("company_name"), 500),
+                "listing_url": listing_url,
+                "location": (
+                    safe_text(item.get("location"), 500)
+                    if item.get("location")
+                    else None
+                ),
+                "score": max(0, min(score, 100)),
+                "recommendation": safe_text(
+                    item.get("recommendation"), 30
+                ),
+                "status": safe_text(item.get("status"), 30),
+                "activity_state": safe_text(
+                    item.get("activity_state"), 30
+                ),
+                "activity_code": safe_text(
+                    item.get("activity_code"), 80
+                ),
+                "disposition": disposition,
+            })
+    result["matched_candidates"] = matched_candidates
     return SearchRunResponse(
         run_id=run.id,
         profile=profile,

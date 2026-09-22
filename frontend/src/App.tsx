@@ -5,6 +5,7 @@ import {
   JobItem,
   Profile,
   SearchRun,
+  SearchRunCandidate,
   Summary,
   approveJob,
   getJobDetail,
@@ -37,6 +38,14 @@ const labels: Record<string, string> = {
   failed: "Başarısız",
   candidates_found: "Aday bulundu",
   no_results: "Sonuç yok",
+  active_review: "Aktif · inceleme bekliyor",
+  activity_unknown: "Aktiflik kanıtlanamadı",
+  already_approved: "Daha önce onaylandı",
+  closed: "İlan kapalı",
+  location_or_policy: "Konum veya profil politikasına uymuyor",
+  location_unknown: "Konumu doğrulanamadı",
+  profile_filtered: "Profil filtresinde elendi",
+  previously_rejected: "Daha önce reddedildi",
 };
 
 function label(value: string): string {
@@ -139,6 +148,48 @@ function MetricCard({ title, value, note, tone = "plain" }: {
     <article className={`metric-card ${tone}`}>
       <span>{title}</span><strong>{value.toLocaleString("tr-TR")}</strong><small>{note}</small>
     </article>
+  );
+}
+
+function SearchResultsModal({ candidates, onClose }: {
+  candidates: SearchRunCandidate[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="search-results-modal" role="dialog" aria-modal="true" aria-labelledby="search-results-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div><p className="eyebrow">SON ARAMA</p><h2 id="search-results-title">Profile uyan sonuçlar</h2></div>
+          <button className="modal-close" onClick={onClose} aria-label="Kapat">×</button>
+        </header>
+        <p className="modal-explanation">Bu liste aramada role uyan tüm kayıtları gösterir. Yalnızca aktifliği doğrulanmış ve inceleme bekleyen ilanlar ana kuyruğa girer.</p>
+        <div className="search-results-list">
+          {candidates.map((candidate) => (
+            <article className="search-result-row" key={candidate.candidate_id}>
+              <span className={`score score-${candidate.recommendation}`}>{candidate.score}</span>
+              <div>
+                <strong>{candidate.title}</strong>
+                <span>{candidate.company_name}</span>
+                <small>{candidate.location ?? "Konum bilinmiyor"} · {candidate.provider}</small>
+              </div>
+              <div className="search-result-status">
+                <b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b>
+                <small>{label(candidate.activity_code)}</small>
+                <a href={candidate.listing_url} target="_blank" rel="noopener noreferrer">İlanı aç ↗</a>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -263,6 +314,7 @@ export default function App() {
   const [includeUnverified, setIncludeUnverified] = useState(false);
   const [searchRun, setSearchRun] = useState<SearchRun | null>(null);
   const [searchStarting, setSearchStarting] = useState(false);
+  const [showSearchResults, setShowSearchResults] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -271,6 +323,7 @@ export default function App() {
     [profiles, profile],
   );
   const searchRunning = searchRun?.status === "queued" || searchRun?.status === "running";
+  const matchedSearchCandidates = searchRun?.result.matched_candidates ?? [];
 
   const refreshBase = useCallback(async (activeToken: string) => {
     const [summaryData, profileData] = await Promise.all([
@@ -306,7 +359,7 @@ export default function App() {
     if (!token || !profile) { setSearchRun(null); return; }
     let cancelled = false;
     getLatestProfileSearch(token, profile)
-      .then((run) => { if (!cancelled) setSearchRun(run); })
+      .then((run) => { if (!cancelled) { setSearchRun(run); setShowSearchResults(false); } })
       .catch((caught) => { if (!cancelled) setError(errorMessage(caught)); });
     return () => { cancelled = true; };
   }, [token, profile]);
@@ -408,6 +461,12 @@ export default function App() {
                       <span><b>{searchRun.result.candidate_count ?? 0}</b> kayıt güncellendi</span>
                     </div>
                   )}
+                  {(searchRun?.result.suppressed_candidates ?? 0) > 0 && (
+                    <p className="search-note">{searchRun?.result.suppressed_candidates} eşleşme önceki kararı nedeniyle yeniden kuyruğa alınmadı.</p>
+                  )}
+                  {matchedSearchCandidates.length > 0 && (
+                    <button className="ghost full search-results-button" onClick={() => setShowSearchResults(true)}>Eşleşmeleri gör ({matchedSearchCandidates.length})</button>
+                  )}
                   {searchRun?.status === "failed" && <p>{errorMessage(new ApiError(500, searchRun.error_code ?? "search_failed"))}</p>}
                   <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting}>
                     {searchRunning ? "Arama sürüyor…" : "Şimdi ilan ara"}
@@ -427,6 +486,7 @@ export default function App() {
           </div>
         )}
       </main>
+      {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} />}
     </div>
   );
 }

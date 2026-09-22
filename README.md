@@ -48,6 +48,13 @@ sırasında kapanırsa yarım kalan
 kayıt bir sonraki başlatma denemesinde 30 dakika sonra güvenli biçimde
 `worker_interrupted` olarak sonlandırılır.
 
+Son aramadaki profile uyan kayıtlar ayrıca **Eşleşmeleri gör** penceresinde
+salt-okunur olarak gösterilir. Önceden reddedilmiş, kapalı, konum filtresinde
+elenmiş veya aktifliği kanıtlanamamış bir ilan bu ekranda nedeni ile görünür;
+ancak güvenli aktif ilan kuyruğuna eklenmez. Sonuç URL'leri API yanıtına
+alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dış
+metinleri React'in varsayılan escaping davranışıyla işler.
+
 Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
 
 ```bash

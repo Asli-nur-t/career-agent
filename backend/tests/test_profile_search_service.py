@@ -4,7 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from app.profile_search_service import ProfileSearchError, run_profile_job_search
+from app.profile_search_service import (
+    ProfileSearchError,
+    load_search_candidate_snapshots,
+    run_profile_job_search,
+)
 
 
 def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
@@ -96,3 +100,39 @@ def test_profile_search_audits_only_its_unverified_candidates(monkeypatch) -> No
     assert audit_call.call_args.kwargs["profile_id"] == profile_id
     assert audit_call.call_args.kwargs["only_unverified"] is True
     assert audit_call.call_args.kwargs["limit"] == 20
+
+
+def test_search_snapshot_keeps_suppressed_match_reason() -> None:
+    candidate_id = uuid4()
+    match = SimpleNamespace(
+        listing=SimpleNamespace(
+            provider="linkedin",
+            external_id="123456",
+        ),
+        score=65,
+        recommendation="apply",
+    )
+    stored = SimpleNamespace(
+        id=candidate_id,
+        provider="linkedin",
+        external_id="123456",
+        title="AI Engineer",
+        company_name_raw="Acme",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        location="İstanbul, Türkiye",
+        status="rejected",
+        activity_state="closed",
+        activity_code="linkedin_closed_marker",
+        evidence=[],
+    )
+    with patch("app.profile_search_service.Session") as session_class:
+        session = session_class.return_value.__enter__.return_value
+        session.scalars.return_value.all.return_value = [stored]
+        result = load_search_candidate_snapshots(
+            MagicMock(),
+            [match],
+        )
+
+    assert result[0]["candidate_id"] == str(candidate_id)
+    assert result[0]["disposition"] == "closed"
+    assert result[0]["score"] == 65

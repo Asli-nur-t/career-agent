@@ -284,4 +284,42 @@ def test_latest_search_exposes_only_allowlisted_result_fields(monkeypatch) -> No
         )
 
     assert response.status_code == 200
-    assert response.json()["result"] == {"candidate_count": 2}
+    assert response.json()["result"] == {
+        "candidate_count": 2,
+        "matched_candidates": [],
+    }
+
+
+def test_latest_search_drops_unsafe_matched_candidate_url(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    now = datetime.now(timezone.utc)
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="succeeded",
+        result={
+            "matched_candidates": [{
+                "candidate_id": str(uuid4()),
+                "provider": "linkedin",
+                "title": "AI Engineer",
+                "company_name": "Acme",
+                "listing_url": "javascript:alert(1)",
+                "score": 70,
+                "disposition": "active_review",
+            }]
+        },
+        error_code=None,
+        created_at=now,
+        started_at=now,
+        finished_at=now,
+    )
+    with patch(
+        "app.operator_api.load_latest_profile_search",
+        return_value=run,
+    ):
+        response = _client().get(
+            "/operator/search-runs/latest?profile=aslinur-default",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["matched_candidates"] == []
