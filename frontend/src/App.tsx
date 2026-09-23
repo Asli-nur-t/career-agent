@@ -14,6 +14,7 @@ import {
   Summary,
   approveCompany,
   approveJob,
+  discoverCompany,
   getCompanyDetail,
   getCompanies,
   getJobDetail,
@@ -115,6 +116,11 @@ function errorMessage(error: unknown): string {
       verified_profile_protected: "Doğrulanmış şirket profili red işlemine karşı korunuyor.",
       identity_confirmation_required: "Şirket kimliğini doğruladığını onaylamalısın.",
       rejection_reason_invalid: "Geçerli bir red nedeni seçmelisin.",
+      company_search_in_progress: "Bu şirket için bir profil araması zaten çalışıyor.",
+      company_search_cooldown: "Bu şirket kısa süre önce arandı. Beş dakika sonra tekrar deneyebilirsin.",
+      evaluator_not_configured: "Şirket değerlendirme modeli backend üzerinde yapılandırılmamış.",
+      company_discovery_failed: "Şirket profil araması güvenli şekilde sonlandırıldı.",
+      rate_limited: "Arama sağlayıcısı geçici olarak istek sınırı uyguladı.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -375,18 +381,20 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
   const [confirmed, setConfirmed] = useState(false);
   const [reason, setReason] = useState<CompanyRejectionReason>("insufficient_evidence");
   const [busy, setBusy] = useState(false);
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const interactionLocked = busy || discoveryBusy;
 
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !busy) onClose();
+      if (event.key === "Escape" && !interactionLocked) onClose();
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busy, onClose]);
+  }, [interactionLocked, onClose]);
 
   async function approve() {
-    if (!confirmed || busy) return;
+    if (!confirmed || interactionLocked) return;
     setBusy(true);
     setError(null);
     try {
@@ -400,7 +408,7 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
   }
 
   async function reject() {
-    if (busy) return;
+    if (interactionLocked) return;
     const accepted = window.confirm(
       `Bu aday profili “${label(reason)}” nedeniyle reddetmek istiyor musun? Doğrulanmamış bağlantılar kayıttan kaldırılacak.`,
     );
@@ -414,6 +422,28 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
       setError(errorMessage(caught));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function discover() {
+    if (interactionLocked || detail.profile_status === "verified") return;
+    const accepted = window.confirm(
+      "Bu şirket için kontrollü web araması ve yerel değerlendirme çalıştırılsın mı? İşlem biraz sürebilir.",
+    );
+    if (!accepted) return;
+    setDiscoveryBusy(true);
+    setError(null);
+    try {
+      const result = await discoverCompany(token, detail.company_id);
+      if (result.status === "failed") {
+        setError(errorMessage(new ApiError(502, result.error_code ?? "company_discovery_failed")));
+        return;
+      }
+      await onChanged();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setDiscoveryBusy(false);
     }
   }
 
@@ -437,7 +467,7 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
   ];
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={busy ? undefined : onClose}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={interactionLocked ? undefined : onClose}>
       <section
         className="company-detail-modal"
         role="dialog"
@@ -451,7 +481,7 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
             <h2 id="company-detail-title">{detail.brand_name ?? detail.name}</h2>
             {detail.brand_name && <p>{detail.name}</p>}
           </div>
-          <button className="modal-close" onClick={onClose} disabled={busy} aria-label="Kapat">×</button>
+          <button className="modal-close" onClick={onClose} disabled={interactionLocked} aria-label="Kapat">×</button>
         </header>
         <div className="company-detail-body">
           <main>
@@ -503,6 +533,15 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
                 </article>
               ))}
             </div>
+            {detail.profile_status !== "verified" && (
+              <section className="company-discovery-box">
+                <h3>{detail.profile_status === "unprofiled" ? "Profil keşfi" : "Profili yeniden ara"}</h3>
+                <p>Yalnızca bu şirket için en fazla üç kontrollü sorgu çalıştırılır. Ham model çıktısı arayüze aktarılmaz.</p>
+                <button className="ghost full" onClick={discover} disabled={interactionLocked}>
+                  {discoveryBusy ? "Profil aranıyor…" : "Şirket profilini ara"}
+                </button>
+              </section>
+            )}
             {detail.reviewable ? (
               <section className="company-review-box">
                 <h3>İnsan incelemesi</h3>
@@ -511,17 +550,16 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
                   <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
                   <span>Şirket kimliğini ve gösterilen resmî bağlantıları doğruladım.</span>
                 </label>
-                <button className="primary full" onClick={approve} disabled={!confirmed || busy}>
+                <button className="primary full" onClick={approve} disabled={!confirmed || interactionLocked}>
                   {busy ? "İşleniyor…" : "Profili doğrula"}
                 </button>
                 <label className="company-reject-reason">
                   Red nedeni
-                  <select value={reason} onChange={(event) => setReason(event.target.value as CompanyRejectionReason)} disabled={busy}>
+                  <select value={reason} onChange={(event) => setReason(event.target.value as CompanyRejectionReason)} disabled={interactionLocked}>
                     {companyRejectionReasons.map((value) => <option key={value} value={value}>{label(value)}</option>)}
                   </select>
                 </label>
-                <button className="danger full" onClick={reject} disabled={busy}>Aday profili reddet</button>
-                {error && <div className="inline-error">{error}</div>}
+                <button className="danger full" onClick={reject} disabled={interactionLocked}>Aday profili reddet</button>
               </section>
             ) : (
               <div className="company-review-locked">
@@ -530,6 +568,7 @@ function CompanyDetailModal({ token, detail, onClose, onChanged }: {
                   : "Bu kayıt şu anda insan incelemesi beklemiyor."}
               </div>
             )}
+            {error && <div className="inline-error">{error}</div>}
           </aside>
         </div>
       </section>

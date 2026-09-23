@@ -70,6 +70,19 @@ export type CompanyRejectionReason =
   | "unsafe_or_invalid_url"
   | "insufficient_evidence";
 
+export type CompanyDiscoveryResult = {
+  company_id: string;
+  company_name: string;
+  status: "succeeded" | "failed";
+  profile_status: Exclude<CompanyProfileStatus, "all" | "unprofiled"> | null;
+  confidence: "high" | "medium" | "low" | null;
+  result_count: number;
+  attempt_count: number;
+  profile_updated: boolean;
+  verification_code: string | null;
+  error_code: string | null;
+};
+
 export type JobItem = {
   candidate_id: string;
   provider: string;
@@ -264,6 +277,16 @@ export function rejectCompany(
   return request(token, `/operator/companies/${encodeURIComponent(id)}/reject`, {
     method: "POST",
     body: JSON.stringify({ confirmed_rejection: true, reason }),
+  });
+}
+
+export function discoverCompany(
+  token: string,
+  id: string,
+): Promise<CompanyDiscoveryResult> {
+  return request(token, `/operator/companies/${encodeURIComponent(id)}/discover`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed_external_search: true }),
   });
 }
 

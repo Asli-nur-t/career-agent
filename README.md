@@ -68,6 +68,15 @@ bağlantılar SSRF/açık yönlendirme riskine karşı sunucuda yeniden doğrula
 geçersiz bağlantılar arayüze gönderilmez. Tüm inceleme endpoint'leri operatör
 anahtarı ister ve kararlar satır kilidi kullanılan transaction içinde yazılır.
 
+Doğrulanmamış bir şirketin ayrıntı penceresindeki **Şirket profilini ara**
+düğmesi yalnızca seçilen şirket için profil keşfi çalıştırır. İşlem harici arama
+kotasını kullanmadan önce açık onay ister, şirket başına aynı anda tek çalışmaya
+izin verir ve yeni bir aramayı beş dakika bekletir. Doğrulanmış profiller bu
+akıstan yeniden aranamaz. API ham arama sonuçlarını veya model çıktısını
+döndürmez; yalnızca sınırlı sonuç sayıları ve güvenli durum kodları arayüze
+aktarılır. Sonuç `candidate_found` veya `needs_review` ise bağlantılar yine insan
+onayı olmadan doğrulanmış sayılmaz.
+
 Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
 
 ```bash

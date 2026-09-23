@@ -11,6 +11,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import engine
+from app.company_profile_search_service import (
+    CompanyProfileSearchError,
+    discover_company_profile,
+)
 from app.discovery.safety import (
     is_denied_official_website,
     normalize_linkedin_company_url,
@@ -160,6 +164,32 @@ class CompanyReviewResponse(BaseModel):
     company_name: str
     status: Literal["verified", "not_found"]
     changed: bool
+
+
+class DiscoverCompanyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_external_search: Literal[True]
+
+
+class CompanyDiscoveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    company_id: UUID
+    company_name: str
+    status: Literal["succeeded", "failed"]
+    profile_status: Literal[
+        "candidate_found",
+        "verified",
+        "needs_review",
+        "not_found",
+    ] | None
+    confidence: Literal["high", "medium", "low"] | None
+    result_count: int = Field(ge=0, le=100)
+    attempt_count: int = Field(ge=0, le=10)
+    profile_updated: bool
+    verification_code: str | None
+    error_code: str | None
 
 
 class OperatorJobItem(BaseModel):
@@ -747,6 +777,33 @@ def _company_review_error(error: ValueError) -> HTTPException:
     )
 
 
+def _company_discovery_error(
+    error: CompanyProfileSearchError,
+) -> HTTPException:
+    error_code = error.code
+    if error_code == "company_not_found":
+        status_code = status.HTTP_404_NOT_FOUND
+    elif error_code in {
+        "company_search_in_progress",
+        "verified_profile_protected",
+    }:
+        status_code = status.HTTP_409_CONFLICT
+    elif error_code == "company_search_cooldown":
+        status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    elif error_code in {
+        "serper_not_configured",
+        "evaluator_not_configured",
+        "database_unavailable",
+    }:
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    else:
+        status_code = status.HTTP_502_BAD_GATEWAY
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code},
+    )
+
+
 def _search_run_response(
     run: ProfileJobSearchRun,
     *,
@@ -944,6 +1001,27 @@ def operator_reject_company(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "database_unavailable"},
         ) from None
+
+
+@router.post(
+    "/companies/{company_id}/discover",
+    response_model=CompanyDiscoveryResponse,
+)
+def operator_discover_company(
+    company_id: UUID,
+    request: DiscoverCompanyRequest,
+) -> CompanyDiscoveryResponse:
+    # ``confirmed_external_search`` is intentionally required by the request
+    # schema. The endpoint is synchronous and bounded to this one UUID.
+    _ = request.confirmed_external_search
+    try:
+        result = discover_company_profile(
+            engine,
+            company_id=company_id,
+        )
+        return CompanyDiscoveryResponse.model_validate(result)
+    except CompanyProfileSearchError as error:
+        raise _company_discovery_error(error) from None
 
 
 @router.post(

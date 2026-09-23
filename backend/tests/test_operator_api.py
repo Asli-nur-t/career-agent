@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("APP_DB_PASSWORD", "test-only-password")
 
 from app.main import app
+from app.company_profile_search_service import CompanyProfileSearchError
 from app.operator_api import (
     OperatorSummary,
     _ranked_item,
@@ -271,6 +272,65 @@ def test_company_rejection_delegates_allowlisted_reason(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "not_found"
     assert review.call_args.kwargs["rejection_reason"] == "wrong_company"
+
+
+def test_company_discovery_requires_explicit_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().post(
+        f"/operator/companies/{uuid4()}/discover",
+        headers=_headers(),
+        json={"confirmed_external_search": False},
+    )
+
+    assert response.status_code == 422
+
+
+def test_company_discovery_is_bounded_to_path_company(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    company_id = uuid4()
+    result = SimpleNamespace(
+        company_id=company_id,
+        company_name="Acme",
+        status="succeeded",
+        profile_status="candidate_found",
+        confidence="high",
+        result_count=3,
+        attempt_count=1,
+        profile_updated=True,
+        verification_code="legal_name_not_found",
+        error_code=None,
+    )
+    with patch(
+        "app.operator_api.discover_company_profile",
+        return_value=result,
+    ) as discover:
+        response = _client().post(
+            f"/operator/companies/{company_id}/discover",
+            headers=_headers(),
+            json={"confirmed_external_search": True},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["profile_status"] == "candidate_found"
+    assert discover.call_args.kwargs["company_id"] == company_id
+
+
+def test_company_discovery_cooldown_maps_to_rate_limit(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    with patch(
+        "app.operator_api.discover_company_profile",
+        side_effect=CompanyProfileSearchError("company_search_cooldown"),
+    ):
+        response = _client().post(
+            f"/operator/companies/{uuid4()}/discover",
+            headers=_headers(),
+            json={"confirmed_external_search": True},
+        )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["error_code"] == (
+        "company_search_cooldown"
+    )
 
 
 def test_candidate_detail_sanitizes_evidence() -> None:
