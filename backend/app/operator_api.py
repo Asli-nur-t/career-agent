@@ -41,6 +41,7 @@ from app.operator_search_runs import (
     load_latest_profile_search,
     queue_profile_search,
 )
+from app.review_company_profile import review_company_profile
 from app.review_job_board_candidate import review_job_board_candidate
 from app.review_job_board_queue import RankedCandidate, load_queue
 
@@ -117,6 +118,48 @@ class OperatorCompanyPage(BaseModel):
     limit: int
     offset: int
     items: list[OperatorCompanyItem]
+
+
+class OperatorCompanyDetail(OperatorCompanyItem):
+    evidence: list[dict[str, str | int | float | bool | None]]
+    search_provider: str | None
+    evaluator_model: str | None
+    last_searched_at: datetime | None
+    career_sources_last_checked_at: datetime | None
+    career_sources_next_check_at: datetime | None
+    career_sources_last_outcome: str | None
+    career_sources_last_error_code: str | None
+    career_sources_candidate_count: int
+    job_boards_last_checked_at: datetime | None
+    job_boards_next_check_at: datetime | None
+    job_boards_last_outcome: str | None
+    job_boards_last_error_code: str | None
+    job_boards_candidate_count: int
+    reviewable: bool
+
+
+class ApproveCompanyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_identity: Literal[True]
+
+
+class RejectCompanyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_rejection: Literal[True]
+    reason: Literal[
+        "wrong_company",
+        "unsafe_or_invalid_url",
+        "insufficient_evidence",
+    ]
+
+
+class CompanyReviewResponse(BaseModel):
+    company_id: UUID
+    company_name: str
+    status: Literal["verified", "not_found"]
+    changed: bool
 
 
 class OperatorJobItem(BaseModel):
@@ -417,6 +460,139 @@ def load_operator_companies(
     )
 
 
+def load_operator_company_detail(
+    database: Engine,
+    company_id: UUID,
+) -> OperatorCompanyDetail | None:
+    with Session(database) as session:
+        row = session.execute(
+            select(Company, CompanyWebProfile)
+            .outerjoin(
+                CompanyWebProfile,
+                CompanyWebProfile.company_id == Company.id,
+            )
+            .where(Company.id == company_id)
+        ).one_or_none()
+        if row is None:
+            return None
+        company, profile = row
+        teknoparks = [
+            safe_text(value, 200)
+            for value in session.scalars(
+                select(CompanyAffiliation.teknopark)
+                .where(CompanyAffiliation.company_id == company_id)
+                .order_by(CompanyAffiliation.teknopark)
+                .limit(25)
+            ).all()
+        ]
+
+    website_url = (
+        _safe_public_url(profile.official_website_url)
+        if profile is not None
+        else None
+    )
+    if website_url and is_denied_official_website(website_url):
+        website_url = None
+    profile_status = profile.status if profile is not None else "unprofiled"
+    return OperatorCompanyDetail(
+        company_id=company.id,
+        name=safe_text(company.name, 500),
+        sector=safe_text(company.sector, 300) if company.sector else None,
+        needs_review=bool(company.needs_review),
+        teknoparks=teknoparks,
+        profile_status=profile_status,
+        brand_name=(
+            safe_text(profile.brand_name, 300)
+            if profile is not None and profile.brand_name
+            else None
+        ),
+        confidence=profile.confidence if profile is not None else None,
+        official_website_url=website_url,
+        careers_url=(
+            _safe_public_url(profile.careers_url)
+            if profile is not None
+            else None
+        ),
+        official_linkedin_url=(
+            _safe_public_url(profile.official_linkedin_url, linkedin=True)
+            if profile is not None
+            else None
+        ),
+        last_verified_at=(
+            profile.last_verified_at if profile is not None else None
+        ),
+        updated_at=profile.updated_at if profile is not None else None,
+        evidence=(
+            _safe_evidence(profile.evidence) if profile is not None else []
+        ),
+        search_provider=(
+            safe_text(profile.search_provider, 50)
+            if profile is not None and profile.search_provider
+            else None
+        ),
+        evaluator_model=(
+            safe_text(profile.evaluator_model, 100)
+            if profile is not None and profile.evaluator_model
+            else None
+        ),
+        last_searched_at=(
+            profile.last_searched_at if profile is not None else None
+        ),
+        career_sources_last_checked_at=(
+            profile.career_sources_last_checked_at
+            if profile is not None
+            else None
+        ),
+        career_sources_next_check_at=(
+            profile.career_sources_next_check_at
+            if profile is not None
+            else None
+        ),
+        career_sources_last_outcome=(
+            safe_text(profile.career_sources_last_outcome, 30)
+            if profile is not None and profile.career_sources_last_outcome
+            else None
+        ),
+        career_sources_last_error_code=(
+            safe_text(profile.career_sources_last_error_code, 80)
+            if profile is not None
+            and profile.career_sources_last_error_code
+            else None
+        ),
+        career_sources_candidate_count=(
+            max(0, min(profile.career_sources_candidate_count, 100))
+            if profile is not None
+            else 0
+        ),
+        job_boards_last_checked_at=(
+            profile.job_boards_last_checked_at
+            if profile is not None
+            else None
+        ),
+        job_boards_next_check_at=(
+            profile.job_boards_next_check_at
+            if profile is not None
+            else None
+        ),
+        job_boards_last_outcome=(
+            safe_text(profile.job_boards_last_outcome, 30)
+            if profile is not None and profile.job_boards_last_outcome
+            else None
+        ),
+        job_boards_last_error_code=(
+            safe_text(profile.job_boards_last_error_code, 80)
+            if profile is not None and profile.job_boards_last_error_code
+            else None
+        ),
+        job_boards_candidate_count=(
+            max(0, min(profile.job_boards_candidate_count, 100))
+            if profile is not None
+            else 0
+        ),
+        reviewable=profile_status in {"candidate_found", "needs_review"},
+    )
+
+
 def _validated_listing_url(
     *,
     provider: str,
@@ -554,6 +730,23 @@ def _review_error(error: ValueError) -> HTTPException:
     )
 
 
+def _company_review_error(error: ValueError) -> HTTPException:
+    error_code = str(error)
+    if error_code == "company_profile_not_found":
+        status_code = status.HTTP_404_NOT_FOUND
+    elif error_code in {
+        "verified_profile_protected",
+        "profile_not_reviewable",
+    }:
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code},
+    )
+
+
 def _search_run_response(
     run: ProfileJobSearchRun,
     *,
@@ -676,6 +869,76 @@ def operator_companies(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"error_code": str(error)},
         ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+
+
+@router.get(
+    "/companies/{company_id}",
+    response_model=OperatorCompanyDetail,
+)
+def operator_company_detail(company_id: UUID) -> OperatorCompanyDetail:
+    try:
+        detail = load_operator_company_detail(engine, company_id)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "company_not_found"},
+        )
+    return detail
+
+
+@router.post(
+    "/companies/{company_id}/approve",
+    response_model=CompanyReviewResponse,
+)
+def operator_approve_company(
+    company_id: UUID,
+    request: ApproveCompanyRequest,
+) -> CompanyReviewResponse:
+    try:
+        result = review_company_profile(
+            engine,
+            company_id=company_id,
+            approve=True,
+            confirmed_identity=request.confirmed_identity,
+        )
+        return CompanyReviewResponse.model_validate(result)
+    except ValueError as error:
+        raise _company_review_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/companies/{company_id}/reject",
+    response_model=CompanyReviewResponse,
+)
+def operator_reject_company(
+    company_id: UUID,
+    request: RejectCompanyRequest,
+) -> CompanyReviewResponse:
+    try:
+        result = review_company_profile(
+            engine,
+            company_id=company_id,
+            approve=False,
+            rejection_reason=request.reason,
+        )
+        return CompanyReviewResponse.model_validate(result)
+    except ValueError as error:
+        raise _company_review_error(error) from None
     except SQLAlchemyError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -109,6 +109,42 @@ def test_verified_profile_cannot_be_rejected() -> None:
                 MagicMock(),
                 company_id=company.id,
                 approve=False,
+                rejection_reason="insufficient_evidence",
             )
 
     session.commit.assert_not_called()
+
+
+def test_rejection_clears_unverified_urls_and_leaves_review_queue() -> None:
+    session, company, profile = _review_session(
+        linkedin_url="https://www.linkedin.com/company/acme/"
+    )
+    profile.confidence = "high"
+
+    with patch("app.review_company_profile.Session", return_value=session):
+        result = review_company_profile(
+            MagicMock(),
+            company_id=company.id,
+            approve=False,
+            rejection_reason="wrong_company",
+        )
+
+    assert result["status"] == "not_found"
+    assert profile.status == "not_found"
+    assert profile.confidence == "low"
+    assert profile.official_website_url is None
+    assert profile.careers_url is None
+    assert profile.official_linkedin_url is None
+    assert profile.evidence[-1]["decision"] == "rejected"
+    assert profile.evidence[-1]["reason"] == "wrong_company"
+    session.commit.assert_called_once_with()
+
+
+def test_rejection_requires_allowlisted_reason() -> None:
+    with pytest.raises(ValueError, match="rejection_reason_invalid"):
+        review_company_profile(
+            MagicMock(),
+            company_id=uuid4(),
+            approve=False,
+            rejection_reason="free-form input",
+        )

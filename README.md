@@ -56,12 +56,17 @@ alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dı
 metinleri React'in varsayılan escaping davranışıyla işler.
 
 Sol menüdeki **Şirketler** görünümü kayıtları 25'erli sayfalar hâlinde,
-profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Bu ilk
-sürüm salt-okunurdur. Şirket, marka, teknopark ve profil durumları veritabanına
-doğrudan erişmeden incelenebilir. API sorgu uzunluğunu ve sayfalama sınırlarını
+profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Her
+şirketin ayrıntı penceresinde keşif kanıtları, tarama zamanları ve doğrulanmış
+harici bağlantılar incelenebilir. `candidate_found` ve `needs_review`
+profilleri, bağlantılar elle kontrol edildikten sonra açık onayla doğrulanabilir
+veya allowlist içindeki bir nedenle reddedilebilir. Red işlemi doğrulanmamış
+URL'leri temizleyerek profili inceleme kuyruğundan çıkarır; doğrulanmış profiller
+red işlemine karşı korunur. API sorgu uzunluğunu ve sayfalama sınırlarını
 doğrular; metin araması parametrik SQLAlchemy ifadesi kullanır. Harici
 bağlantılar SSRF/açık yönlendirme riskine karşı sunucuda yeniden doğrulanır ve
-geçersiz bağlantılar arayüze gönderilmez.
+geçersiz bağlantılar arayüze gönderilmez. Tüm inceleme endpoint'leri operatör
+anahtarı ister ve kararlar satır kilidi kullanılan transaction içinde yazılır.
 
 Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
 

@@ -18,6 +18,13 @@ from app.discovery.safety import (
 from app.models import Company, CompanyWebProfile
 
 
+COMPANY_PROFILE_REJECTION_REASONS = {
+    "wrong_company",
+    "unsafe_or_invalid_url",
+    "insufficient_evidence",
+}
+
+
 @dataclass(frozen=True)
 class ReviewableCompanyProfile:
     company_id: UUID
@@ -114,11 +121,16 @@ def review_company_profile(
     company_id: UUID,
     approve: bool,
     confirmed_identity: bool = False,
+    rejection_reason: str | None = None,
 ) -> dict[str, object]:
     if approve and not confirmed_identity:
         raise ValueError("identity_confirmation_required")
     if not approve and confirmed_identity:
         raise ValueError("confirmation_not_allowed_for_rejection")
+    if approve and rejection_reason is not None:
+        raise ValueError("rejection_reason_not_allowed_for_approval")
+    if not approve and rejection_reason not in COMPANY_PROFILE_REJECTION_REASONS:
+        raise ValueError("rejection_reason_invalid")
 
     with Session(database) as session:
         row = session.execute(
@@ -160,13 +172,25 @@ def review_company_profile(
             profile.status = "verified"
             profile.last_verified_at = now
         else:
-            profile.status = "needs_review"
+            # A rejected discovery must leave the review queue. Clearing the
+            # URLs also satisfies the database invariant for ``not_found`` and
+            # prevents an unverified link from being presented as official.
+            profile.status = "not_found"
+            profile.confidence = "low"
+            profile.official_website_url = None
+            profile.careers_url = None
+            profile.official_linkedin_url = None
             profile.last_verified_at = None
         profile.evidence = [
             *profile.evidence,
             {
                 "kind": "manual_company_profile_review",
                 "decision": decision,
+                **(
+                    {"reason": rejection_reason}
+                    if rejection_reason is not None
+                    else {}
+                ),
                 "reviewed_at": now.isoformat(),
             },
         ]
@@ -206,6 +230,9 @@ def main() -> None:
                 company_id=args.company_id,
                 approve=args.approve,
                 confirmed_identity=args.confirmed_identity,
+                rejection_reason=(
+                    "insufficient_evidence" if args.reject else None
+                ),
             )
         else:
             profiles = load_review_queue(engine, limit=args.limit)

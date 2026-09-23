@@ -1,16 +1,20 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  CompanyDetail,
   CompanyItem,
   CompanyPage,
   CompanyProfileStatus,
+  CompanyRejectionReason,
   JobDetail,
   JobItem,
   Profile,
   SearchRun,
   SearchRunCandidate,
   Summary,
+  approveCompany,
   approveJob,
+  getCompanyDetail,
   getCompanies,
   getJobDetail,
   getJobs,
@@ -18,6 +22,7 @@ import {
   getSummary,
   getLatestProfileSearch,
   rejectJob,
+  rejectCompany,
   startProfileSearch,
 } from "./api";
 
@@ -59,6 +64,11 @@ const labels: Record<string, string> = {
   high: "Yüksek güven",
   medium: "Orta güven",
   low: "Düşük güven",
+  wrong_company: "Yanlış şirket eşleşmesi",
+  unsafe_or_invalid_url: "Geçersiz veya güvensiz bağlantı",
+  insufficient_evidence: "Kanıt yetersiz",
+  success: "Başarılı",
+  error: "Hata",
 };
 
 function label(value: string): string {
@@ -99,6 +109,12 @@ function errorMessage(error: unknown): string {
       search_failed: "Arama güvenli şekilde sonlandırıldı. Ayrıntılar sunucu logunda.",
       search_run_unavailable: "Arama kaydı oluşturuldu ancak yeniden okunamadı.",
       cached: "Bu profil için önbellek süresi henüz dolmadı. Biraz sonra tekrar dene.",
+      company_not_found: "Şirket kaydı bulunamadı.",
+      company_profile_not_found: "Bu şirket için incelenecek profil bulunamadı.",
+      profile_not_reviewable: "Bu şirket profili artık inceleme durumunda değil.",
+      verified_profile_protected: "Doğrulanmış şirket profili red işlemine karşı korunuyor.",
+      identity_confirmation_required: "Şirket kimliğini doğruladığını onaylamalısın.",
+      rejection_reason_invalid: "Geçerli bir red nedeni seçmelisin.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -344,9 +360,187 @@ function CompanyLinks({ company }: { company: CompanyItem }) {
   );
 }
 
-function CompaniesView({ token, onError }: {
+const companyRejectionReasons: CompanyRejectionReason[] = [
+  "wrong_company",
+  "unsafe_or_invalid_url",
+  "insufficient_evidence",
+];
+
+function CompanyDetailModal({ token, detail, onClose, onChanged }: {
+  token: string;
+  detail: CompanyDetail;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  const [reason, setReason] = useState<CompanyRejectionReason>("insufficient_evidence");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && !busy) onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [busy, onClose]);
+
+  async function approve() {
+    if (!confirmed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await approveCompany(token, detail.company_id);
+      await onChanged();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reject() {
+    if (busy) return;
+    const accepted = window.confirm(
+      `Bu aday profili “${label(reason)}” nedeniyle reddetmek istiyor musun? Doğrulanmamış bağlantılar kayıttan kaldırılacak.`,
+    );
+    if (!accepted) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rejectCompany(token, detail.company_id, reason);
+      await onChanged();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const sourceScans = [
+    {
+      title: "Kariyer kaynağı taraması",
+      checked: detail.career_sources_last_checked_at,
+      next: detail.career_sources_next_check_at,
+      outcome: detail.career_sources_last_outcome,
+      error: detail.career_sources_last_error_code,
+      count: detail.career_sources_candidate_count,
+    },
+    {
+      title: "İlan panosu taraması",
+      checked: detail.job_boards_last_checked_at,
+      next: detail.job_boards_next_check_at,
+      outcome: detail.job_boards_last_outcome,
+      error: detail.job_boards_last_error_code,
+      count: detail.job_boards_candidate_count,
+    },
+  ];
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={busy ? undefined : onClose}>
+      <section
+        className="company-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="company-detail-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <p className="eyebrow">ŞİRKET PROFİLİ</p>
+            <h2 id="company-detail-title">{detail.brand_name ?? detail.name}</h2>
+            {detail.brand_name && <p>{detail.name}</p>}
+          </div>
+          <button className="modal-close" onClick={onClose} disabled={busy} aria-label="Kapat">×</button>
+        </header>
+        <div className="company-detail-body">
+          <main>
+            <div className="company-detail-status">
+              <b className={`company-status ${detail.profile_status}`}>{label(detail.profile_status)}</b>
+              {detail.confidence && <span>{label(detail.confidence)}</span>}
+              {detail.needs_review && <span className="data-warning">Ana kayıt incelenmeli</span>}
+            </div>
+            <dl className="company-facts">
+              <div><dt>Sektör</dt><dd>{detail.sector ?? "Belirtilmemiş"}</dd></div>
+              <div><dt>Teknopark</dt><dd>{detail.teknoparks.join(", ") || "Kayıt yok"}</dd></div>
+              <div><dt>Son profil araması</dt><dd>{formatDate(detail.last_searched_at)}</dd></div>
+              <div><dt>Son doğrulama</dt><dd>{formatDate(detail.last_verified_at)}</dd></div>
+              <div><dt>Arama sağlayıcısı</dt><dd>{detail.search_provider ?? "Bilinmiyor"}</dd></div>
+              <div><dt>Değerlendirici</dt><dd>{detail.evaluator_model ?? "Bilinmiyor"}</dd></div>
+            </dl>
+            <section className="detail-section">
+              <h3>Resmî bağlantılar</h3>
+              <CompanyLinks company={detail} />
+            </section>
+            <section className="detail-section">
+              <h3>Kanıtlar</h3>
+              {detail.evidence.length === 0 ? <p className="muted">Kanıt kaydı yok.</p> : (
+                <div className="evidence-list company-evidence-list">
+                  {detail.evidence.map((item, index) => (
+                    <dl key={`${detail.company_id}-${index}`}>
+                      {Object.entries(item).map(([key, value]) => (
+                        <div key={key}><dt>{label(key)}</dt><dd>{String(value ?? "—")}</dd></div>
+                      ))}
+                    </dl>
+                  ))}
+                </div>
+              )}
+            </section>
+          </main>
+          <aside>
+            <h3>Tarama durumu</h3>
+            <div className="company-scan-list">
+              {sourceScans.map((scan) => (
+                <article key={scan.title}>
+                  <strong>{scan.title}</strong>
+                  <span>{scan.outcome ? label(scan.outcome) : "Henüz çalışmadı"}</span>
+                  <dl>
+                    <div><dt>Son kontrol</dt><dd>{formatDate(scan.checked)}</dd></div>
+                    <div><dt>Sonraki</dt><dd>{formatDate(scan.next)}</dd></div>
+                    <div><dt>Aday</dt><dd>{scan.count}</dd></div>
+                    {scan.error && <div><dt>Hata kodu</dt><dd>{scan.error}</dd></div>}
+                  </dl>
+                </article>
+              ))}
+            </div>
+            {detail.reviewable ? (
+              <section className="company-review-box">
+                <h3>İnsan incelemesi</h3>
+                <p>Bağlantıları yeni sekmede açıp şirket adı ve alan adının aynı kuruluşa ait olduğunu doğrula.</p>
+                <label className="confirmation">
+                  <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+                  <span>Şirket kimliğini ve gösterilen resmî bağlantıları doğruladım.</span>
+                </label>
+                <button className="primary full" onClick={approve} disabled={!confirmed || busy}>
+                  {busy ? "İşleniyor…" : "Profili doğrula"}
+                </button>
+                <label className="company-reject-reason">
+                  Red nedeni
+                  <select value={reason} onChange={(event) => setReason(event.target.value as CompanyRejectionReason)} disabled={busy}>
+                    {companyRejectionReasons.map((value) => <option key={value} value={value}>{label(value)}</option>)}
+                  </select>
+                </label>
+                <button className="danger full" onClick={reject} disabled={busy}>Aday profili reddet</button>
+                {error && <div className="inline-error">{error}</div>}
+              </section>
+            ) : (
+              <div className="company-review-locked">
+                {detail.profile_status === "verified"
+                  ? "Bu profil doğrulanmış ve red işlemine karşı korunuyor."
+                  : "Bu kayıt şu anda insan incelemesi beklemiyor."}
+              </div>
+            )}
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CompaniesView({ token, onError, onReviewed }: {
   token: string;
   onError: (message: string | null) => void;
+  onReviewed: () => Promise<void>;
 }) {
   const [page, setPage] = useState<CompanyPage | null>(null);
   const [queryInput, setQueryInput] = useState("");
@@ -354,6 +548,9 @@ function CompaniesView({ token, onError }: {
   const [profileStatus, setProfileStatus] = useState<CompanyProfileStatus>("all");
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [detail, setDetail] = useState<CompanyDetail | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -364,7 +561,26 @@ function CompaniesView({ token, onError }: {
       .catch((caught) => { if (!cancelled) onError(errorMessage(caught)); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [token, query, profileStatus, offset, onError]);
+  }, [token, query, profileStatus, offset, onError, reloadVersion]);
+
+  async function openCompany(companyId: string) {
+    if (detailBusy) return;
+    setDetailBusy(true);
+    onError(null);
+    try {
+      setDetail(await getCompanyDetail(token, companyId));
+    } catch (caught) {
+      onError(errorMessage(caught));
+    } finally {
+      setDetailBusy(false);
+    }
+  }
+
+  async function afterCompanyReview() {
+    setDetail(null);
+    setReloadVersion((current) => current + 1);
+    await onReviewed();
+  }
 
   function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -414,12 +630,12 @@ function CompaniesView({ token, onError }: {
         </form>
       </div>
       <div className="company-readonly-note">
-        Bu ekran salt okunurdur. Onay ve veri düzeltme işlemleri sonraki adımda açık doğrulama ile eklenecek.
+        Şirket satırındaki “İncele” ile kaynakları ve kanıtları görebilir; yalnızca bekleyen profilleri açık onayla doğrulayabilir veya reddedebilirsin.
       </div>
       {busy && <div className="loading-line company-loading" />}
       <div className="company-table-wrap">
         <table className="company-table">
-          <thead><tr><th>Şirket</th><th>Teknopark</th><th>Profil</th><th>Kaynaklar</th><th>Güncelleme</th></tr></thead>
+          <thead><tr><th>Şirket</th><th>Teknopark</th><th>Profil</th><th>Kaynaklar</th><th>Güncelleme</th><th /></tr></thead>
           <tbody>
             {page?.items.map((company) => (
               <tr key={company.company_id}>
@@ -440,6 +656,7 @@ function CompaniesView({ token, onError }: {
                 </td>
                 <td><CompanyLinks company={company} /></td>
                 <td><small>{formatDate(company.updated_at ?? company.last_verified_at)}</small></td>
+                <td><button className="ghost company-open" type="button" disabled={detailBusy} onClick={() => openCompany(company.company_id)}>İncele</button></td>
               </tr>
             ))}
           </tbody>
@@ -455,6 +672,14 @@ function CompaniesView({ token, onError }: {
           <button className="ghost" disabled={offset + limit >= total || busy} onClick={() => setOffset(offset + limit)}>Sonraki →</button>
         </div>
       </footer>
+      {detail && (
+        <CompanyDetailModal
+          token={token}
+          detail={detail}
+          onClose={() => setDetail(null)}
+          onChanged={afterCompanyReview}
+        />
+      )}
     </section>
   );
 }
@@ -642,7 +867,7 @@ export default function App() {
             </section>
             {detail ? <DetailPanel token={token} detail={detail} onChanged={afterReview} /> : <aside className="detail-placeholder"><div>↗</div><h2>Bir ilan seç</h2><p>Kanıtları, aktiflik kontrolünü ve profil uyumunu burada inceleyebilirsin.</p></aside>}
           </div>
-        ) : <CompaniesView token={token} onError={setError} />}
+        ) : <CompaniesView token={token} onError={setError} onReviewed={() => refreshBase(token)} />}
       </main>
       {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} />}
     </div>

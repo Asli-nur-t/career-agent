@@ -47,6 +47,29 @@ export type CompanyPage = {
   items: CompanyItem[];
 };
 
+export type CompanyDetail = CompanyItem & {
+  evidence: Record<string, EvidenceValue>[];
+  search_provider: string | null;
+  evaluator_model: string | null;
+  last_searched_at: string | null;
+  career_sources_last_checked_at: string | null;
+  career_sources_next_check_at: string | null;
+  career_sources_last_outcome: string | null;
+  career_sources_last_error_code: string | null;
+  career_sources_candidate_count: number;
+  job_boards_last_checked_at: string | null;
+  job_boards_next_check_at: string | null;
+  job_boards_last_outcome: string | null;
+  job_boards_last_error_code: string | null;
+  job_boards_candidate_count: number;
+  reviewable: boolean;
+};
+
+export type CompanyRejectionReason =
+  | "wrong_company"
+  | "unsafe_or_invalid_url"
+  | "insufficient_evidence";
+
 export type JobItem = {
   candidate_id: string;
   provider: string;
@@ -214,6 +237,34 @@ export function getCompanies(
   const cleanedQuery = query.trim();
   if (cleanedQuery) params.set("q", cleanedQuery);
   return request(token, `/operator/companies?${params.toString()}`);
+}
+
+export function getCompanyDetail(
+  token: string,
+  id: string,
+): Promise<CompanyDetail> {
+  return request(token, `/operator/companies/${encodeURIComponent(id)}`);
+}
+
+export function approveCompany(
+  token: string,
+  id: string,
+): Promise<{ status: string }> {
+  return request(token, `/operator/companies/${encodeURIComponent(id)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed_identity: true }),
+  });
+}
+
+export function rejectCompany(
+  token: string,
+  id: string,
+  reason: CompanyRejectionReason,
+): Promise<{ status: string }> {
+  return request(token, `/operator/companies/${encodeURIComponent(id)}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed_rejection: true, reason }),
+  });
 }
 
 export function getJobs(

@@ -13,6 +13,7 @@ from app.operator_api import (
     OperatorSummary,
     _ranked_item,
     load_operator_companies,
+    load_operator_company_detail,
     load_operator_job_detail,
     load_operator_summary,
 )
@@ -174,6 +175,102 @@ def test_company_loader_sanitizes_text_and_external_urls() -> None:
     assert page.items[0].official_linkedin_url == (
         "https://www.linkedin.com/company/acme-ai/"
     )
+
+
+def test_company_detail_sanitizes_evidence_and_urls() -> None:
+    company_id = uuid4()
+    now = datetime.now(timezone.utc)
+    company = SimpleNamespace(
+        id=company_id,
+        name="Acme\x00 AI",
+        sector="Yazılım",
+        needs_review=False,
+    )
+    profile = SimpleNamespace(
+        status="candidate_found",
+        brand_name="Acme AI",
+        confidence="high",
+        official_website_url="https://acme.example/",
+        careers_url="javascript:alert(1)",
+        official_linkedin_url="https://tr.linkedin.com/company/acme-ai/about/",
+        evidence=[
+            {"text": "Acme\x00 evidence", "nested": {"ignored": True}}
+        ],
+        search_provider="serper",
+        evaluator_model="gemini-test",
+        last_searched_at=now,
+        last_verified_at=None,
+        career_sources_last_checked_at=now,
+        career_sources_next_check_at=now,
+        career_sources_last_outcome="no_results",
+        career_sources_last_error_code=None,
+        career_sources_candidate_count=0,
+        job_boards_last_checked_at=now,
+        job_boards_next_check_at=now,
+        job_boards_last_outcome="candidates_found",
+        job_boards_last_error_code=None,
+        job_boards_candidate_count=2,
+        updated_at=now,
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.execute.return_value = SimpleNamespace(
+        one_or_none=lambda: (company, profile)
+    )
+    session.scalars.return_value = SimpleNamespace(
+        all=lambda: ["İTÜ\x00 ARI Teknokent"]
+    )
+
+    with patch("app.operator_api.Session", return_value=session):
+        detail = load_operator_company_detail(MagicMock(), company_id)
+
+    assert detail is not None
+    assert detail.name == "Acme AI"
+    assert detail.teknoparks == ["İTÜ ARI Teknokent"]
+    assert detail.careers_url is None
+    assert detail.official_linkedin_url == (
+        "https://www.linkedin.com/company/acme-ai/"
+    )
+    assert detail.evidence == [{"text": "Acme evidence"}]
+    assert detail.reviewable is True
+
+
+def test_company_approval_requires_explicit_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().post(
+        f"/operator/companies/{uuid4()}/approve",
+        headers=_headers(),
+        json={"confirmed_identity": False},
+    )
+
+    assert response.status_code == 422
+
+
+def test_company_rejection_delegates_allowlisted_reason(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    company_id = uuid4()
+    result = {
+        "company_id": str(company_id),
+        "company_name": "Acme",
+        "status": "not_found",
+        "changed": True,
+    }
+    with patch(
+        "app.operator_api.review_company_profile",
+        return_value=result,
+    ) as review:
+        response = _client().post(
+            f"/operator/companies/{company_id}/reject",
+            headers=_headers(),
+            json={
+                "confirmed_rejection": True,
+                "reason": "wrong_company",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_found"
+    assert review.call_args.kwargs["rejection_reason"] == "wrong_company"
 
 
 def test_candidate_detail_sanitizes_evidence() -> None:
