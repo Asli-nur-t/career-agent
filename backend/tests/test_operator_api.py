@@ -12,6 +12,7 @@ from app.main import app
 from app.operator_api import (
     OperatorSummary,
     _ranked_item,
+    load_operator_companies,
     load_operator_job_detail,
     load_operator_summary,
 )
@@ -90,6 +91,89 @@ def test_summary_loader_uses_bounded_aggregate_queries() -> None:
     assert summary.verified_companies == 14
     assert summary.verified_active_candidates == 1
     assert session.scalar.call_count == 8
+
+
+def test_company_list_is_authenticated_and_bounded(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    page = {
+        "total": 1,
+        "limit": 25,
+        "offset": 0,
+        "items": [],
+    }
+    with patch("app.operator_api.load_operator_companies", return_value=page) as load:
+        response = _client().get(
+            "/operator/companies?q=AI%20Agency&profile_status=verified",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert load.call_args.kwargs == {
+        "limit": 25,
+        "offset": 0,
+        "query": "AI Agency",
+        "profile_status": "verified",
+    }
+
+
+def test_company_list_rejects_unknown_profile_status(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().get(
+        "/operator/companies?profile_status=deleted",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == (
+        "company_profile_status_invalid"
+    )
+
+
+def test_company_loader_sanitizes_text_and_external_urls() -> None:
+    company_id = uuid4()
+    now = datetime.now(timezone.utc)
+    company = SimpleNamespace(
+        id=company_id,
+        name="Acme\x00 AI",
+        sector="Yazılım\x00",
+        needs_review=False,
+    )
+    profile = SimpleNamespace(
+        status="verified",
+        brand_name="Acme\x00",
+        confidence="high",
+        official_website_url="https://acme.example/",
+        careers_url="javascript:alert(1)",
+        official_linkedin_url="https://tr.linkedin.com/company/acme-ai/about/",
+        last_verified_at=now,
+        updated_at=now,
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = 1
+    session.execute.side_effect = [
+        SimpleNamespace(all=lambda: [(company, profile)]),
+        SimpleNamespace(all=lambda: [(company_id, "İTÜ\x00 ARI Teknokent")]),
+    ]
+
+    with patch("app.operator_api.Session", return_value=session):
+        page = load_operator_companies(
+            MagicMock(),
+            limit=25,
+            offset=0,
+            query="100%_safe",
+            profile_status="verified",
+        )
+
+    assert page.total == 1
+    assert page.items[0].name == "Acme AI"
+    assert page.items[0].teknoparks == ["İTÜ ARI Teknokent"]
+    assert page.items[0].official_website_url == "https://acme.example/"
+    assert page.items[0].careers_url is None
+    assert page.items[0].official_linkedin_url == (
+        "https://www.linkedin.com/company/acme-ai/"
+    )
 
 
 def test_candidate_detail_sanitizes_evidence() -> None:

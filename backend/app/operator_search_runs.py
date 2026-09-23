@@ -61,7 +61,12 @@ def queue_profile_search(
         return run.id
 
 
-def execute_profile_search_run(database: Engine, run_id: UUID) -> None:
+def execute_profile_search_run(
+    database: Engine,
+    run_id: UUID,
+    *,
+    force: bool = False,
+) -> None:
     now = _now()
     with Session(database) as session:
         row = session.execute(
@@ -81,6 +86,7 @@ def execute_profile_search_run(database: Engine, run_id: UUID) -> None:
         result = run_profile_job_search(
             database,
             profile_label=profile_label,
+            force=force,
         )
     except ProfileSearchError as error:
         _finish_failed(database, run_id, error.code)

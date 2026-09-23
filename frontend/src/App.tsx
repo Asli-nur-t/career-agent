@@ -1,6 +1,9 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  CompanyItem,
+  CompanyPage,
+  CompanyProfileStatus,
   JobDetail,
   JobItem,
   Profile,
@@ -8,6 +11,7 @@ import {
   SearchRunCandidate,
   Summary,
   approveJob,
+  getCompanies,
   getJobDetail,
   getJobs,
   getProfiles,
@@ -17,7 +21,7 @@ import {
   startProfileSearch,
 } from "./api";
 
-type View = "overview" | "jobs";
+type View = "overview" | "jobs" | "companies";
 
 const labels: Record<string, string> = {
   strong_apply: "Güçlü başvuru",
@@ -46,6 +50,15 @@ const labels: Record<string, string> = {
   location_unknown: "Konumu doğrulanamadı",
   profile_filtered: "Profil filtresinde elendi",
   previously_rejected: "Daha önce reddedildi",
+  all: "Tüm durumlar",
+  unprofiled: "Profil oluşturulmadı",
+  candidate_found: "Aday profil bulundu",
+  verified: "Doğrulandı",
+  needs_review: "İnceleme gerekli",
+  not_found: "Bulunamadı",
+  high: "Yüksek güven",
+  medium: "Orta güven",
+  low: "Düşük güven",
 };
 
 function label(value: string): string {
@@ -85,6 +98,7 @@ function errorMessage(error: unknown): string {
       worker_interrupted: "Önceki arama backend yeniden başladığı için kesildi.",
       search_failed: "Arama güvenli şekilde sonlandırıldı. Ayrıntılar sunucu logunda.",
       search_run_unavailable: "Arama kaydı oluşturuldu ancak yeniden okunamadı.",
+      cached: "Bu profil için önbellek süresi henüz dolmadı. Biraz sonra tekrar dene.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -302,6 +316,149 @@ function DetailPanel({ token, detail, onChanged }: {
   );
 }
 
+const companyStatuses: CompanyProfileStatus[] = [
+  "all",
+  "unprofiled",
+  "candidate_found",
+  "needs_review",
+  "verified",
+  "not_found",
+];
+
+function CompanyLinks({ company }: { company: CompanyItem }) {
+  const links = [
+    ["Web sitesi", company.official_website_url],
+    ["Kariyer", company.careers_url],
+    ["LinkedIn", company.official_linkedin_url],
+  ].filter((item): item is [string, string] => Boolean(item[1]));
+
+  if (links.length === 0) return <span className="company-no-link">Bağlantı yok</span>;
+  return (
+    <div className="company-links">
+      {links.map(([title, url]) => (
+        <a key={title} href={url} target="_blank" rel="noopener noreferrer">
+          {title} ↗
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function CompaniesView({ token, onError }: {
+  token: string;
+  onError: (message: string | null) => void;
+}) {
+  const [page, setPage] = useState<CompanyPage | null>(null);
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
+  const [profileStatus, setProfileStatus] = useState<CompanyProfileStatus>("all");
+  const [offset, setOffset] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBusy(true);
+    onError(null);
+    getCompanies(token, query, profileStatus, offset)
+      .then((data) => { if (!cancelled) setPage(data); })
+      .catch((caught) => { if (!cancelled) onError(errorMessage(caught)); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [token, query, profileStatus, offset, onError]);
+
+  function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    setOffset(0);
+    setQuery(queryInput.trim());
+  }
+
+  const limit = page?.limit ?? 25;
+  const total = page?.total ?? 0;
+  const rangeStart = total === 0 ? 0 : (page?.offset ?? 0) + 1;
+  const rangeEnd = Math.min((page?.offset ?? 0) + (page?.items.length ?? 0), total);
+
+  return (
+    <section className="companies-panel">
+      <div className="companies-toolbar">
+        <div>
+          <p className="eyebrow">ŞİRKET VERİ TABANI</p>
+          <h2>Şirketler</h2>
+          <span>{total.toLocaleString("tr-TR")} kayıt</span>
+        </div>
+        <form className="company-filters" onSubmit={submitSearch}>
+          <label>
+            Profil durumu
+            <select
+              value={profileStatus}
+              onChange={(event) => {
+                setOffset(0);
+                setProfileStatus(event.target.value as CompanyProfileStatus);
+              }}
+            >
+              {companyStatuses.map((status) => <option value={status} key={status}>{label(status)}</option>)}
+            </select>
+          </label>
+          <label>
+            Şirket ara
+            <span className="search-field">
+              <input
+                type="search"
+                value={queryInput}
+                maxLength={100}
+                onChange={(event) => setQueryInput(event.target.value)}
+                placeholder="Şirket veya marka adı"
+              />
+              <button className="ghost" type="submit">Ara</button>
+            </span>
+          </label>
+        </form>
+      </div>
+      <div className="company-readonly-note">
+        Bu ekran salt okunurdur. Onay ve veri düzeltme işlemleri sonraki adımda açık doğrulama ile eklenecek.
+      </div>
+      {busy && <div className="loading-line company-loading" />}
+      <div className="company-table-wrap">
+        <table className="company-table">
+          <thead><tr><th>Şirket</th><th>Teknopark</th><th>Profil</th><th>Kaynaklar</th><th>Güncelleme</th></tr></thead>
+          <tbody>
+            {page?.items.map((company) => (
+              <tr key={company.company_id}>
+                <td>
+                  <strong>{company.brand_name ?? company.name}</strong>
+                  {company.brand_name && <span>{company.name}</span>}
+                  <small>{company.sector ?? "Sektör belirtilmemiş"}</small>
+                  {company.needs_review && <b className="data-warning">Ana kayıt incelenmeli</b>}
+                </td>
+                <td>
+                  {company.teknoparks.length > 0
+                    ? company.teknoparks.map((park) => <span className="park-tag" key={park}>{park}</span>)
+                    : <span className="company-no-link">Kayıt yok</span>}
+                </td>
+                <td>
+                  <b className={`company-status ${company.profile_status}`}>{label(company.profile_status)}</b>
+                  {company.confidence && <small>{label(company.confidence)}</small>}
+                </td>
+                <td><CompanyLinks company={company} /></td>
+                <td><small>{formatDate(company.updated_at ?? company.last_verified_at)}</small></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!busy && page?.items.length === 0 && (
+          <div className="empty-state compact"><div>○</div><h3>Şirket bulunamadı</h3><p>Arama metnini veya profil durumu filtresini değiştirebilirsin.</p></div>
+        )}
+      </div>
+      <footer className="company-pagination">
+        <span>{rangeStart}–{rangeEnd} / {total.toLocaleString("tr-TR")}</span>
+        <div>
+          <button className="ghost" disabled={offset === 0 || busy} onClick={() => setOffset(Math.max(0, offset - limit))}>← Önceki</button>
+          <button className="ghost" disabled={offset + limit >= total || busy} onClick={() => setOffset(offset + limit)}>Sonraki →</button>
+        </div>
+      </footer>
+    </section>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState("");
   const [view, setView] = useState<View>("overview");
@@ -413,14 +570,15 @@ export default function App() {
         <nav>
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}><span>⌂</span>Genel bakış</button>
           <button className={view === "jobs" ? "active" : ""} onClick={() => setView("jobs")}><span>◎</span>İlan kuyruğu<b>{jobs.length}</b></button>
+          <button className={view === "companies" ? "active" : ""} onClick={() => setView("companies")}><span>▦</span>Şirketler<b>{summary?.companies ?? 0}</b></button>
         </nav>
         <div className="sidebar-foot"><i /><div><strong>Yerel sistem</strong><span>İnsan onayı etkin</span></div></div>
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : "İlan inceleme kuyruğu"}</h1></div>
+          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : view === "jobs" ? "İlan inceleme kuyruğu" : "Şirket yönetimi"}</h1></div>
           <div className="top-actions">
-            <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}>{profiles.map((item) => <option key={item.label}>{item.label}</option>)}</select></label>
+            {view !== "companies" && <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}>{profiles.map((item) => <option key={item.label}>{item.label}</option>)}</select></label>}
             <button className="ghost" onClick={() => setToken("")}>Kilitle</button>
           </div>
         </header>
@@ -475,7 +633,7 @@ export default function App() {
               </article>
             </section>
           </div>
-        ) : (
+        ) : view === "jobs" ? (
           <div className="jobs-layout">
             <section className="queue-panel">
               <div className="queue-toolbar"><div><h2>İlanlar</h2><span>{jobs.length} kayıt</span></div><label className="switch"><input type="checkbox" checked={includeUnverified} onChange={(event) => setIncludeUnverified(event.target.checked)} /><span />Doğrulanmamışları göster</label></div>
@@ -484,7 +642,7 @@ export default function App() {
             </section>
             {detail ? <DetailPanel token={token} detail={detail} onChanged={afterReview} /> : <aside className="detail-placeholder"><div>↗</div><h2>Bir ilan seç</h2><p>Kanıtları, aktiflik kontrolünü ve profil uyumunu burada inceleyebilirsin.</p></aside>}
           </div>
-        )}
+        ) : <CompaniesView token={token} onError={setError} />}
       </main>
       {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} />}
     </div>

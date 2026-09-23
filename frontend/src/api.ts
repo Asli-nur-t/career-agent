@@ -16,6 +16,37 @@ export type Profile = {
   last_search_outcome: string | null;
 };
 
+export type CompanyProfileStatus =
+  | "all"
+  | "unprofiled"
+  | "candidate_found"
+  | "verified"
+  | "needs_review"
+  | "not_found";
+
+export type CompanyItem = {
+  company_id: string;
+  name: string;
+  sector: string | null;
+  needs_review: boolean;
+  teknoparks: string[];
+  profile_status: Exclude<CompanyProfileStatus, "all">;
+  brand_name: string | null;
+  confidence: "high" | "medium" | "low" | null;
+  official_website_url: string | null;
+  careers_url: string | null;
+  official_linkedin_url: string | null;
+  last_verified_at: string | null;
+  updated_at: string | null;
+};
+
+export type CompanyPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: CompanyItem[];
+};
+
 export type JobItem = {
   candidate_id: string;
   provider: string;
@@ -167,6 +198,22 @@ export function getSummary(token: string): Promise<Summary> {
 
 export function getProfiles(token: string): Promise<Profile[]> {
   return request(token, "/operator/profiles");
+}
+
+export function getCompanies(
+  token: string,
+  query: string,
+  profileStatus: CompanyProfileStatus,
+  offset: number,
+): Promise<CompanyPage> {
+  const params = new URLSearchParams({
+    limit: "25",
+    offset: String(offset),
+    profile_status: profileStatus,
+  });
+  const cleanedQuery = query.trim();
+  if (cleanedQuery) params.set("q", cleanedQuery);
+  return request(token, `/operator/companies?${params.toString()}`);
 }
 
 export function getJobs(

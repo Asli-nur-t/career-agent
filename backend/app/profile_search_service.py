@@ -125,9 +125,12 @@ def run_profile_job_search(
     max_results: int = 10,
     minimum_score: int = 20,
     delay_seconds: float = 1.0,
+    force: bool = False,
 ) -> dict[str, object]:
     """Run one bounded search and return a UI-safe aggregate result."""
     state = load_profile_search_state(database, profile_label=profile_label)
+    if not state.due and not force:
+        raise ProfileSearchError("cached")
     serper_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not serper_key:
         raise ProfileSearchError("serper_not_configured")

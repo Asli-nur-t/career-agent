@@ -6,12 +6,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import engine
-from app.discovery.safety import safe_text
+from app.discovery.safety import (
+    is_denied_official_website,
+    normalize_linkedin_company_url,
+    normalize_public_url,
+    safe_text,
+)
 from app.discovery.schemas import SearchResult
 from app.job_boards import (
     SUPPORTED_JOB_PROVIDERS,
@@ -22,6 +27,7 @@ from app.models import (
     CandidateProfile,
     CareerSource,
     Company,
+    CompanyAffiliation,
     CompanyWebProfile,
     JobBoardCandidate,
     JobMatch,
@@ -56,6 +62,15 @@ SEARCH_DISPOSITIONS = {
     "previously_rejected",
 }
 
+COMPANY_PROFILE_STATUSES = {
+    "all",
+    "unprofiled",
+    "candidate_found",
+    "verified",
+    "needs_review",
+    "not_found",
+}
+
 
 class OperatorSummary(BaseModel):
     companies: int
@@ -73,6 +88,35 @@ class OperatorProfileItem(BaseModel):
     target_roles: list[str]
     next_search_at: datetime | None
     last_search_outcome: str | None
+
+
+class OperatorCompanyItem(BaseModel):
+    company_id: UUID
+    name: str
+    sector: str | None
+    needs_review: bool
+    teknoparks: list[str]
+    profile_status: Literal[
+        "unprofiled",
+        "candidate_found",
+        "verified",
+        "needs_review",
+        "not_found",
+    ]
+    brand_name: str | None
+    confidence: Literal["high", "medium", "low"] | None
+    official_website_url: str | None
+    careers_url: str | None
+    official_linkedin_url: str | None
+    last_verified_at: datetime | None
+    updated_at: datetime | None
+
+
+class OperatorCompanyPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[OperatorCompanyItem]
 
 
 class OperatorJobItem(BaseModel):
@@ -139,6 +183,7 @@ class StartSearchRequest(BaseModel):
 
     profile: str = Field(min_length=1, max_length=100)
     confirmed_external_search: Literal[True]
+    force: bool = False
 
 
 class SearchRunResponse(BaseModel):
@@ -235,6 +280,141 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
         )
         for label, roles, next_search_at, last_outcome in rows
     ]
+
+
+def _safe_public_url(value: object, *, linkedin: bool = False) -> str | None:
+    if not value:
+        return None
+    try:
+        if linkedin:
+            return normalize_linkedin_company_url(value)
+        return normalize_public_url(value)
+    except ValueError:
+        return None
+
+
+def load_operator_companies(
+    database: Engine,
+    *,
+    limit: int,
+    offset: int,
+    query: str | None,
+    profile_status: str,
+) -> OperatorCompanyPage:
+    if profile_status not in COMPANY_PROFILE_STATUSES:
+        raise ValueError("company_profile_status_invalid")
+
+    filters = []
+    cleaned_query = safe_text(query, 100).strip() if query else ""
+    if cleaned_query:
+        filters.append(
+            or_(
+                Company.name.icontains(cleaned_query, autoescape=True),
+                CompanyWebProfile.brand_name.icontains(
+                    cleaned_query,
+                    autoescape=True,
+                ),
+            )
+        )
+    if profile_status == "unprofiled":
+        filters.append(CompanyWebProfile.company_id.is_(None))
+    elif profile_status != "all":
+        filters.append(CompanyWebProfile.status == profile_status)
+
+    count_statement = (
+        select(func.count())
+        .select_from(Company)
+        .outerjoin(
+            CompanyWebProfile,
+            CompanyWebProfile.company_id == Company.id,
+        )
+        .where(*filters)
+    )
+    page_statement = (
+        select(Company, CompanyWebProfile)
+        .outerjoin(
+            CompanyWebProfile,
+            CompanyWebProfile.company_id == Company.id,
+        )
+        .where(*filters)
+        .order_by(Company.name, Company.id)
+        .offset(offset)
+        .limit(limit)
+    )
+
+    with Session(database) as session:
+        total = session.scalar(count_statement) or 0
+        rows = session.execute(page_statement).all()
+        company_ids = [company.id for company, _profile in rows]
+        affiliations: dict[UUID, list[str]] = {
+            company_id: [] for company_id in company_ids
+        }
+        if company_ids:
+            affiliation_rows = session.execute(
+                select(
+                    CompanyAffiliation.company_id,
+                    CompanyAffiliation.teknopark,
+                )
+                .where(CompanyAffiliation.company_id.in_(company_ids))
+                .order_by(
+                    CompanyAffiliation.company_id,
+                    CompanyAffiliation.teknopark,
+                )
+            ).all()
+            for company_id, teknopark in affiliation_rows:
+                affiliations[company_id].append(safe_text(teknopark, 200))
+
+    items: list[OperatorCompanyItem] = []
+    for company, profile in rows:
+        website_url = (
+            _safe_public_url(profile.official_website_url)
+            if profile is not None
+            else None
+        )
+        if website_url and is_denied_official_website(website_url):
+            website_url = None
+        items.append(
+            OperatorCompanyItem(
+                company_id=company.id,
+                name=safe_text(company.name, 500),
+                sector=(
+                    safe_text(company.sector, 300) if company.sector else None
+                ),
+                needs_review=bool(company.needs_review),
+                teknoparks=affiliations.get(company.id, [])[:25],
+                profile_status=(profile.status if profile else "unprofiled"),
+                brand_name=(
+                    safe_text(profile.brand_name, 300)
+                    if profile is not None and profile.brand_name
+                    else None
+                ),
+                confidence=(profile.confidence if profile else None),
+                official_website_url=website_url,
+                careers_url=(
+                    _safe_public_url(profile.careers_url)
+                    if profile is not None
+                    else None
+                ),
+                official_linkedin_url=(
+                    _safe_public_url(
+                        profile.official_linkedin_url,
+                        linkedin=True,
+                    )
+                    if profile is not None
+                    else None
+                ),
+                last_verified_at=(
+                    profile.last_verified_at if profile is not None else None
+                ),
+                updated_at=(profile.updated_at if profile is not None else None),
+            )
+        )
+    return OperatorCompanyPage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
 
 
 def _validated_listing_url(
@@ -476,6 +656,33 @@ def operator_profiles() -> list[OperatorProfileItem]:
         ) from None
 
 
+@router.get("/companies", response_model=OperatorCompanyPage)
+def operator_companies(
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
+    q: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    profile_status: Annotated[str, Query(max_length=30)] = "all",
+) -> OperatorCompanyPage:
+    try:
+        return load_operator_companies(
+            engine,
+            limit=limit,
+            offset=offset,
+            query=q,
+            profile_status=profile_status,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"error_code": str(error)},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+
+
 @router.post(
     "/search-runs",
     response_model=SearchRunResponse,
@@ -508,7 +715,12 @@ def operator_start_search(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "search_run_unavailable"},
         )
-    background_tasks.add_task(execute_profile_search_run, engine, run_id)
+    background_tasks.add_task(
+        execute_profile_search_run,
+        engine,
+        run_id,
+        force=request.force,
+    )
     return _search_run_response(run, profile=request.profile)
 
 

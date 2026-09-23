@@ -55,6 +55,14 @@ ancak güvenli aktif ilan kuyruğuna eklenmez. Sonuç URL'leri API yanıtına
 alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dış
 metinleri React'in varsayılan escaping davranışıyla işler.
 
+Sol menüdeki **Şirketler** görünümü kayıtları 25'erli sayfalar hâlinde,
+profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Bu ilk
+sürüm salt-okunurdur. Şirket, marka, teknopark ve profil durumları veritabanına
+doğrudan erişmeden incelenebilir. API sorgu uzunluğunu ve sayfalama sınırlarını
+doğrular; metin araması parametrik SQLAlchemy ifadesi kullanır. Harici
+bağlantılar SSRF/açık yönlendirme riskine karşı sunucuda yeniden doğrulanır ve
+geçersiz bağlantılar arayüze gönderilmez.
+
 Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
 
 ```bash

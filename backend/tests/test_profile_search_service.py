@@ -13,7 +13,11 @@ from app.profile_search_service import (
 
 def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
-    state = SimpleNamespace(spec=SimpleNamespace(), profile_id="profile-id")
+    state = SimpleNamespace(
+        spec=SimpleNamespace(),
+        profile_id="profile-id",
+        due=True,
+    )
 
     with patch(
         "app.profile_search_service.load_profile_search_state",
@@ -32,7 +36,7 @@ def test_profile_search_audits_only_its_unverified_candidates(monkeypatch) -> No
     monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
     profile_id = uuid4()
     spec = SimpleNamespace(config_hash=lambda: "a" * 64)
-    state = SimpleNamespace(spec=spec, profile_id=profile_id)
+    state = SimpleNamespace(spec=spec, profile_id=profile_id, due=True)
     discovery = SimpleNamespace(
         queries=("query",),
         raw_result_count=4,
