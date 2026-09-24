@@ -21,8 +21,9 @@ from app.operator_api import (
     load_operator_company_detail,
     load_operator_job_detail,
     load_operator_summary,
+    mark_operator_job_viewed,
 )
-from app.operator_search_runs import SearchAlreadyRunning
+from app.operator_search_runs import SearchAlreadyRunning, SearchCooldownActive
 from app.review_job_board_queue import RankedCandidate
 
 
@@ -596,7 +597,10 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
         finished_at=None,
     )
     with (
-        patch("app.operator_api.queue_profile_search", return_value=run_id),
+        patch(
+            "app.operator_api.queue_profile_search",
+            return_value=run_id,
+        ) as queue,
         patch("app.operator_api.load_latest_profile_search", return_value=run),
         patch("app.operator_api.execute_profile_search_run") as execute,
     ):
@@ -605,13 +609,80 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
             headers=_headers(),
             json={
                 "profile": "aslinur-default",
+                "roles": ["AI Engineer", "Backend Engineer"],
                 "confirmed_external_search": True,
             },
         )
 
     assert response.status_code == 202
     assert response.json()["run_id"] == str(run_id)
+    assert response.json()["result"]["matched_candidates"] == []
+    assert queue.call_args.kwargs["requested_roles"] == [
+        "AI Engineer",
+        "Backend Engineer",
+    ]
+    assert queue.call_args.kwargs["search_mode"] == "quick"
+    assert queue.call_args.kwargs["force"] is False
+    assert execute.call_args.args[1] == run_id
     execute.assert_called_once()
+
+
+def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    run_id = uuid4()
+    now = datetime.now(timezone.utc)
+    run = SimpleNamespace(
+        id=run_id,
+        status="queued",
+        result={"search_mode": "deep"},
+        error_code=None,
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+    )
+    with (
+        patch("app.operator_api.queue_profile_search", return_value=run_id) as queue,
+        patch("app.operator_api.load_latest_profile_search", return_value=run),
+        patch("app.operator_api.execute_profile_search_run") as execute,
+    ):
+        response = _client().post(
+            "/operator/search-runs",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "roles": ["AI Engineer"],
+                "search_mode": "deep",
+                "force": True,
+                "confirmed_external_search": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert queue.call_args.kwargs["search_mode"] == "deep"
+    assert queue.call_args.kwargs["force"] is True
+    assert execute.call_args.kwargs["force"] is True
+
+
+def test_operator_returns_retry_after_for_same_search_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    with patch(
+        "app.operator_api.queue_profile_search",
+        side_effect=SearchCooldownActive(173),
+    ):
+        response = _client().post(
+            "/operator/search-runs",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "roles": ["AI Engineer"],
+                "force": True,
+                "confirmed_external_search": True,
+            },
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "173"
+    assert response.json()["detail"]["error_code"] == "search_cooldown"
 
 
 def test_operator_rejects_parallel_profile_search(monkeypatch) -> None:
@@ -625,6 +696,7 @@ def test_operator_rejects_parallel_profile_search(monkeypatch) -> None:
             headers=_headers(),
             json={
                 "profile": "aslinur-default",
+                "roles": ["AI Engineer"],
                 "confirmed_external_search": True,
             },
         )
@@ -638,10 +710,68 @@ def test_operator_search_requires_external_request_confirmation(monkeypatch) -> 
     response = _client().post(
         "/operator/search-runs",
         headers=_headers(),
-        json={"profile": "aslinur-default"},
+        json={"profile": "aslinur-default", "roles": ["AI Engineer"]},
     )
 
     assert response.status_code == 422
+
+
+def test_operator_rejects_empty_search_roles(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().post(
+        "/operator/search-runs",
+        headers=_headers(),
+        json={
+            "profile": "aslinur-default",
+            "roles": [],
+            "confirmed_external_search": True,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_operator_marks_job_viewed(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    candidate_id = uuid4()
+    viewed_at = datetime.now(timezone.utc)
+    with patch(
+        "app.operator_api.mark_operator_job_viewed",
+        return_value=SimpleNamespace(
+            candidate_id=candidate_id,
+            operator_viewed_at=viewed_at,
+        ),
+    ):
+        response = _client().post(
+            f"/operator/jobs/{candidate_id}/viewed",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["candidate_id"] == str(candidate_id)
+    returned = datetime.fromisoformat(
+        response.json()["operator_viewed_at"].replace("Z", "+00:00")
+    )
+    assert returned == viewed_at
+
+
+def test_mark_job_viewed_preserves_first_view_time() -> None:
+    candidate_id = uuid4()
+    first_viewed_at = datetime.now(timezone.utc)
+    candidate = SimpleNamespace(
+        id=candidate_id,
+        operator_viewed_at=first_viewed_at,
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = candidate
+
+    with patch("app.operator_api.Session", return_value=session):
+        result = mark_operator_job_viewed(MagicMock(), candidate_id)
+
+    assert result is not None
+    assert result.operator_viewed_at == first_viewed_at
+    session.commit.assert_not_called()
 
 
 def test_latest_search_exposes_only_allowlisted_result_fields(monkeypatch) -> None:

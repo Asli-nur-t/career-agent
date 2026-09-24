@@ -210,9 +210,11 @@ def discover_profile_candidates(
     max_results: int,
     minimum_score: int,
     delay_seconds: float = 0,
+    search_role_groups: tuple[tuple[str, ...], ...] | None = None,
 ) -> ProfileDiscovery:
     queries = build_profile_job_queries(
-        (
+        search_role_groups
+        or (
             tuple(profile.target_roles),
             tuple(profile.secondary_roles),
             tuple(profile.tertiary_roles),
@@ -645,7 +647,7 @@ def main() -> None:
         type=lambda value: _bounded_int(
             value,
             minimum=1,
-            maximum=6,
+            maximum=20,
             label="Sorgu limiti",
         ),
         default=6,

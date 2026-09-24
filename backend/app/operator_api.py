@@ -1,6 +1,6 @@
 """Authenticated API used by the local operator console."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -51,6 +51,7 @@ from app.models import (
 from app.operator_auth import require_operator_token
 from app.operator_search_runs import (
     SearchAlreadyRunning,
+    SearchCooldownActive,
     execute_profile_search_run,
     load_latest_profile_search,
     queue_profile_search,
@@ -255,6 +256,7 @@ class OperatorJobItem(BaseModel):
     published_at: datetime | None
     activity_state: str
     activity_code: str
+    operator_viewed_at: datetime | None
     score: int
     recommendation: str
     matched_terms: list[str]
@@ -287,6 +289,7 @@ class OperatorJobDetail(BaseModel):
     evidence: list[dict[str, str | int | float | bool | None]]
     first_seen_at: datetime
     last_seen_at: datetime
+    operator_viewed_at: datetime | None
 
 
 class ApproveJobRequest(BaseModel):
@@ -306,8 +309,15 @@ class StartSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     profile: str = Field(min_length=1, max_length=100)
+    roles: list[str] = Field(min_length=1, max_length=10)
+    search_mode: Literal["quick", "deep"] = "quick"
     confirmed_external_search: Literal[True]
     force: bool = False
+
+
+class JobViewedResponse(BaseModel):
+    candidate_id: UUID
+    operator_viewed_at: datetime
 
 
 class SearchRunResponse(BaseModel):
@@ -788,7 +798,29 @@ def load_operator_job_detail(
         evidence=_safe_evidence(candidate.evidence),
         first_seen_at=candidate.first_seen_at,
         last_seen_at=candidate.last_seen_at,
+        operator_viewed_at=getattr(candidate, "operator_viewed_at", None),
     )
+
+
+def mark_operator_job_viewed(
+    database: Engine,
+    candidate_id: UUID,
+) -> JobViewedResponse | None:
+    with Session(database) as session:
+        candidate = session.scalar(
+            select(JobBoardCandidate)
+            .where(JobBoardCandidate.id == candidate_id)
+            .with_for_update()
+        )
+        if candidate is None:
+            return None
+        if candidate.operator_viewed_at is None:
+            candidate.operator_viewed_at = datetime.now(timezone.utc)
+            session.commit()
+        return JobViewedResponse(
+            candidate_id=candidate.id,
+            operator_viewed_at=candidate.operator_viewed_at,
+        )
 
 
 def _review_error(error: ValueError) -> HTTPException:
@@ -885,6 +917,7 @@ def _search_run_response(
     run: ProfileJobSearchRun,
     *,
     profile: str,
+    database: Engine | None = None,
 ) -> SearchRunResponse:
     raw = run.result if isinstance(run.result, dict) else {}
     allowed_result_keys = {
@@ -901,8 +934,30 @@ def _search_run_response(
         "activity_checked_count",
         "activity_changed_count",
         "activity_counts",
+        "requested_roles",
+        "search_mode",
+        "query_limit",
+        "result_limit_per_query",
     }
     result = {key: raw[key] for key in allowed_result_keys if key in raw}
+    raw_roles = raw.get("requested_roles")
+    if isinstance(raw_roles, list):
+        result["requested_roles"] = [
+            role
+            for value in raw_roles[:10]
+            if (role := safe_text(value, 100))
+        ]
+    if result.get("search_mode") not in {"quick", "deep"}:
+        result.pop("search_mode", None)
+    for key, maximum in (
+        ("query_limit", 20),
+        ("result_limit_per_query", 10),
+    ):
+        if key in result:
+            try:
+                result[key] = max(0, min(int(result[key]), maximum))
+            except (TypeError, ValueError):
+                result.pop(key, None)
     matched_candidates: list[dict[str, object]] = []
     raw_candidates = raw.get("matched_candidates")
     if isinstance(raw_candidates, list):
@@ -947,7 +1002,30 @@ def _search_run_response(
                     item.get("activity_code"), 80
                 ),
                 "disposition": disposition,
+                "operator_viewed_at": (
+                    safe_text(item.get("operator_viewed_at"), 50)
+                    if item.get("operator_viewed_at")
+                    else None
+                ),
             })
+    if database is not None and matched_candidates:
+        candidate_ids = [UUID(item["candidate_id"]) for item in matched_candidates]
+        with Session(database) as session:
+            viewed_rows = session.execute(
+                select(
+                    JobBoardCandidate.id,
+                    JobBoardCandidate.operator_viewed_at,
+                ).where(JobBoardCandidate.id.in_(candidate_ids))
+            ).all()
+        viewed_by_id = {
+            str(candidate_id): viewed_at.isoformat() if viewed_at else None
+            for candidate_id, viewed_at in viewed_rows
+        }
+        for item in matched_candidates:
+            item["operator_viewed_at"] = viewed_by_id.get(
+                item["candidate_id"],
+                item["operator_viewed_at"],
+            )
     result["matched_candidates"] = matched_candidates
     return SearchRunResponse(
         run_id=run.id,
@@ -1225,17 +1303,34 @@ def operator_start_search(
     background_tasks: BackgroundTasks,
 ) -> SearchRunResponse:
     try:
-        run_id = queue_profile_search(engine, profile_label=request.profile)
+        run_id = queue_profile_search(
+            engine,
+            profile_label=request.profile,
+            requested_roles=request.roles,
+            search_mode=request.search_mode,
+            force=request.force,
+        )
         run = load_latest_profile_search(engine, profile_label=request.profile)
     except SearchAlreadyRunning:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error_code": "search_already_running"},
         ) from None
-    except ValueError as error:
+    except SearchCooldownActive as error:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": str(error)},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error_code": "search_cooldown"},
+            headers={"Retry-After": str(error.retry_after_seconds)},
+        ) from None
+    except ValueError as error:
+        error_code = str(error)
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+                if error_code == "profile_not_found"
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail={"error_code": error_code},
         ) from None
     except SQLAlchemyError:
         raise HTTPException(
@@ -1253,7 +1348,7 @@ def operator_start_search(
         run_id,
         force=request.force,
     )
-    return _search_run_response(run, profile=request.profile)
+    return _search_run_response(run, profile=request.profile, database=engine)
 
 
 @router.get(
@@ -1272,7 +1367,7 @@ def operator_latest_search(
         ) from None
     if run is None:
         return None
-    return _search_run_response(run, profile=profile)
+    return _search_run_response(run, profile=profile, database=engine)
 
 
 @router.get("/jobs", response_model=OperatorJobPage)
@@ -1339,6 +1434,26 @@ def operator_job_detail(candidate_id: UUID) -> OperatorJobDetail:
             detail={"error_code": "candidate_not_found"},
         )
     return detail
+
+
+@router.post(
+    "/jobs/{candidate_id}/viewed",
+    response_model=JobViewedResponse,
+)
+def operator_mark_job_viewed(candidate_id: UUID) -> JobViewedResponse:
+    try:
+        viewed = mark_operator_job_viewed(engine, candidate_id)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if viewed is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "candidate_not_found"},
+        )
+    return viewed
 
 
 @router.post(

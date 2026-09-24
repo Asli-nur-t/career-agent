@@ -10,6 +10,7 @@ import {
   JobDetail,
   JobItem,
   Profile,
+  SearchMode,
   SearchRun,
   SearchRunCandidate,
   Summary,
@@ -24,6 +25,7 @@ import {
   getProfiles,
   getSummary,
   getLatestProfileSearch,
+  markJobViewed,
   rejectJob,
   rejectCompany,
   pauseCompanyDiscoveryRun,
@@ -102,6 +104,12 @@ function todayLabel(): string {
   }).format(new Date()).toLocaleUpperCase("tr-TR");
 }
 
+function profileSearchBudget(roleCount: number, mode: SearchMode) {
+  const groups = mode === "quick" ? 1 : Math.ceil(roleCount / 3);
+  const queryLimit = Math.min(mode === "quick" ? 10 : 20, groups * 5);
+  return { queryLimit, resultLimit: queryLimit * 10 };
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     const messages: Record<string, string> = {
@@ -112,6 +120,9 @@ function errorMessage(error: unknown): string {
       database_unavailable: "Veritabanına şu anda ulaşılamıyor.",
       candidate_data_mismatch: "İlan kanıtı güvenli doğrulamadan geçemedi.",
       search_already_running: "Bu profil için bir arama zaten çalışıyor.",
+      search_roles_invalid: "Arama için 1–10 geçerli rol seçmelisin.",
+      search_mode_invalid: "Geçerli bir tarama yoğunluğu seçmelisin.",
+      search_cooldown: "Aynı kapsam kısa süre önce tarandı. Beş dakika dolmadan yeniden kota kullanılamaz.",
       serper_not_configured: "SERPER_API_KEY backend üzerinde yapılandırılmamış.",
       worker_interrupted: "Önceki arama backend yeniden başladığı için kesildi.",
       search_failed: "Arama güvenli şekilde sonlandırıldı. Ayrıntılar sunucu logunda.",
@@ -201,9 +212,10 @@ function MetricCard({ title, value, note, tone = "plain" }: {
   );
 }
 
-function SearchResultsModal({ candidates, onClose }: {
+function SearchResultsModal({ candidates, onClose, onViewed }: {
   candidates: SearchRunCandidate[];
   onClose: () => void;
+  onViewed: (candidateId: string) => void;
 }) {
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
@@ -223,7 +235,7 @@ function SearchResultsModal({ candidates, onClose }: {
         <p className="modal-explanation">Bu liste aramada role uyan tüm kayıtları gösterir. Yalnızca aktifliği doğrulanmış ve inceleme bekleyen ilanlar ana kuyruğa girer.</p>
         <div className="search-results-list">
           {candidates.map((candidate) => (
-            <article className="search-result-row" key={candidate.candidate_id}>
+            <article className={`search-result-row ${candidate.operator_viewed_at ? "viewed" : "unviewed"}`} key={candidate.candidate_id}>
               <span className={`score score-${candidate.recommendation}`}>{candidate.score}</span>
               <div>
                 <strong>{candidate.title}</strong>
@@ -231,9 +243,12 @@ function SearchResultsModal({ candidates, onClose }: {
                 <small>{candidate.location ?? "Konum bilinmiyor"} · {candidate.provider}</small>
               </div>
               <div className="search-result-status">
+                <span className={`view-state ${candidate.operator_viewed_at ? "viewed" : "new"}`}>
+                  {candidate.operator_viewed_at ? "İncelendi" : "Yeni"}
+                </span>
                 <b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b>
                 <small>{label(candidate.activity_code)}</small>
-                <a href={candidate.listing_url} target="_blank" rel="noopener noreferrer">İlanı aç ↗</a>
+                <a href={candidate.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(candidate.candidate_id)}>İlanı aç ↗</a>
               </div>
             </article>
           ))}
@@ -247,14 +262,18 @@ function JobRow({ job, active, onSelect }: {
   job: JobItem; active: boolean; onSelect: (id: string) => void;
 }) {
   return (
-    <button className={`job-row ${active ? "selected" : ""}`} onClick={() => onSelect(job.candidate_id)}>
+    <button className={`job-row ${active ? "selected" : ""} ${job.operator_viewed_at ? "viewed" : "unviewed"}`} onClick={() => onSelect(job.candidate_id)}>
       <span className={`score score-${job.recommendation}`}>{job.score}</span>
       <span className="job-main">
         <strong>{job.title}</strong>
         <span>{job.company_name}</span>
         <small>{job.location ?? "Konum bilinmiyor"} · {label(job.work_mode)}</small>
       </span>
-      <span className={`recommendation ${job.recommendation}`}>{label(job.recommendation)}</span>
+      <span className="job-row-status">
+        {!job.operator_viewed_at && <em className="view-state new">Yeni</em>}
+        {job.operator_viewed_at && <em className="view-state viewed">İncelendi</em>}
+        <span className={`recommendation ${job.recommendation}`}>{label(job.recommendation)}</span>
+      </span>
     </button>
   );
 }
@@ -886,6 +905,9 @@ export default function App() {
   const [searchRun, setSearchRun] = useState<SearchRun | null>(null);
   const [searchStarting, setSearchStarting] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [searchRoles, setSearchRoles] = useState<string[]>([]);
+  const [searchMode, setSearchMode] = useState<SearchMode>("quick");
+  const [customRole, setCustomRole] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -895,6 +917,17 @@ export default function App() {
   );
   const searchRunning = searchRun?.status === "queued" || searchRun?.status === "running";
   const matchedSearchCandidates = searchRun?.result.matched_candidates ?? [];
+  const profileRoleKey = selectedProfile?.target_roles.join("\u001f") ?? "";
+  const availableSearchRoles = useMemo(() => {
+    const base = selectedProfile?.target_roles ?? [];
+    return [
+      ...base,
+      ...searchRoles.filter(
+        (role) => !base.some((item) => item.toLocaleLowerCase("tr-TR") === role.toLocaleLowerCase("tr-TR")),
+      ),
+    ];
+  }, [selectedProfile, searchRoles]);
+  const searchBudget = profileSearchBudget(searchRoles.length, searchMode);
 
   const refreshBase = useCallback(async (activeToken: string) => {
     const [summaryData, profileData] = await Promise.all([
@@ -936,6 +969,11 @@ export default function App() {
   }, [token, profile]);
 
   useEffect(() => {
+    setSearchRoles((selectedProfile?.target_roles ?? []).slice(0, 10));
+    setCustomRole("");
+  }, [profile, profileRoleKey]);
+
+  useEffect(() => {
     if (!token || !profile || !searchRunning) return;
     const timer = window.setInterval(() => {
       getLatestProfileSearch(token, profile).then(async (run) => {
@@ -948,10 +986,58 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [token, profile, searchRunning, refreshBase, refreshJobs]);
 
+  const applyViewedState = useCallback((candidateId: string, viewedAt: string) => {
+    setJobs((current) => current.map((job) => (
+      job.candidate_id === candidateId
+        ? { ...job, operator_viewed_at: viewedAt }
+        : job
+    )));
+    setDetail((current) => (
+      current?.candidate_id === candidateId
+        ? { ...current, operator_viewed_at: viewedAt }
+        : current
+    ));
+    setSearchRun((current) => {
+      if (!current?.result.matched_candidates) return current;
+      return {
+        ...current,
+        result: {
+          ...current.result,
+          matched_candidates: current.result.matched_candidates.map((candidate) => (
+            candidate.candidate_id === candidateId
+              ? { ...candidate, operator_viewed_at: viewedAt }
+              : candidate
+          )),
+        },
+      };
+    });
+  }, []);
+
+  const recordViewed = useCallback(async (candidateId: string) => {
+    if (!token) return;
+    try {
+      const result = await markJobViewed(token, candidateId);
+      applyViewedState(candidateId, result.operator_viewed_at);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }, [token, applyViewedState]);
+
   useEffect(() => {
     if (!token || !selected) { setDetail(null); return; }
-    getJobDetail(token, selected).then(setDetail).catch((caught) => setError(errorMessage(caught)));
-  }, [token, selected]);
+    let cancelled = false;
+    Promise.all([
+      getJobDetail(token, selected),
+      markJobViewed(token, selected),
+    ]).then(([jobDetail, viewed]) => {
+      if (cancelled) return;
+      setDetail({ ...jobDetail, operator_viewed_at: viewed.operator_viewed_at });
+      applyViewedState(selected, viewed.operator_viewed_at);
+    }).catch((caught) => {
+      if (!cancelled) setError(errorMessage(caught));
+    });
+    return () => { cancelled = true; };
+  }, [token, selected, applyViewedState]);
 
   async function afterReview() {
     setDetail(null); setSelected(null);
@@ -960,10 +1046,15 @@ export default function App() {
 
   async function startSearch() {
     if (!token || !profile || searchRunning || searchStarting) return;
-    if (!window.confirm("En fazla 6 arama sorgusu ve 20 ilan aktiflik kontrolü çalıştırılsın mı?")) return;
+    if (searchRoles.length < 1 || searchRoles.length > 10) {
+      setError("Arama için 1–10 rol seçmelisin.");
+      return;
+    }
+    const modeLabel = searchMode === "quick" ? "Hızlı" : "Derin";
+    if (!window.confirm(`${modeLabel} taramada ${searchRoles.length} rol için en fazla ${searchBudget.queryLimit} sorgu ve ${searchBudget.resultLimit} ham sonuç taransın mı?`)) return;
     setSearchStarting(true); setError(null);
     try {
-      setSearchRun(await startProfileSearch(token, profile));
+      setSearchRun(await startProfileSearch(token, profile, searchRoles, searchMode));
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "search_already_running") {
         setSearchRun(await getLatestProfileSearch(token, profile));
@@ -973,6 +1064,24 @@ export default function App() {
     } finally {
       setSearchStarting(false);
     }
+  }
+
+  function toggleSearchRole(role: string) {
+    setSearchRoles((current) => (
+      current.some((item) => item === role)
+        ? current.filter((item) => item !== role)
+        : current.length < 10 ? [...current, role] : current
+    ));
+  }
+
+  function addCustomRole(event: FormEvent) {
+    event.preventDefault();
+    const role = customRole.trim().replace(/\s+/g, " ").slice(0, 100);
+    if (!role || searchRoles.length >= 10) return;
+    if (!searchRoles.some((item) => item.toLocaleLowerCase("tr-TR") === role.toLocaleLowerCase("tr-TR"))) {
+      setSearchRoles((current) => [...current, role]);
+    }
+    setCustomRole("");
   }
 
   if (!token) return <AuthScreen onConnect={setToken} />;
@@ -1015,7 +1124,23 @@ export default function App() {
               </article>
               <article className="panel profile-panel">
                 <p className="eyebrow">AKTİF PROFİL</p><h2>{selectedProfile?.label ?? "Profil yok"}</h2>
-                <div className="role-cloud">{selectedProfile?.target_roles.map((role) => <span key={role}>{role}</span>)}</div>
+                <div className="role-search-editor">
+                  <div className="role-editor-head"><span>Genel tarama rolleri</span><small>{searchRoles.length}/10 seçili</small></div>
+                  <div className="role-cloud selectable">{availableSearchRoles.map((role) => {
+                    const selectedRole = searchRoles.includes(role);
+                    const custom = !(selectedProfile?.target_roles ?? []).includes(role);
+                    return <button type="button" className={selectedRole ? "selected" : ""} key={role} onClick={() => toggleSearchRole(role)}>{role}{custom && selectedRole ? " ×" : ""}</button>;
+                  })}</div>
+                  <form className="role-add" onSubmit={addCustomRole}>
+                    <input value={customRole} maxLength={100} onChange={(event) => setCustomRole(event.target.value)} placeholder="Başka bir rol ekle" />
+                    <button className="ghost" type="submit" disabled={!customRole.trim() || searchRoles.length >= 10}>Ekle</button>
+                  </form>
+                  <div className="search-mode-picker" role="group" aria-label="Tarama yoğunluğu">
+                    <button type="button" className={searchMode === "quick" ? "selected" : ""} onClick={() => setSearchMode("quick")}><b>Hızlı</b><span>Roller birlikte</span></button>
+                    <button type="button" className={searchMode === "deep" ? "selected" : ""} onClick={() => setSearchMode("deep")}><b>Derin</b><span>Üçlü rol grupları</span></button>
+                  </div>
+                  <small className="role-budget">LinkedIn, Kariyer.net, Indeed ve Glassdoor ayrı ayrı; ardından resmî ATS kaynakları taranır. En fazla {searchBudget.queryLimit} sorgu / {searchBudget.resultLimit} sonuç.</small>
+                </div>
                 <dl><div><dt>Son arama</dt><dd>{selectedProfile?.last_search_outcome ? label(selectedProfile.last_search_outcome) : "Henüz yok"}</dd></div><div><dt>Sonraki kontrol</dt><dd>{formatDate(selectedProfile?.next_search_at ?? null)}</dd></div><div><dt>Aktif kaynak</dt><dd>{summary?.active_sources ?? 0}</dd></div></dl>
                 <div className={`search-run ${searchRun?.status ?? "idle"}`}>
                   <div>
@@ -1040,7 +1165,7 @@ export default function App() {
                     <button className="ghost full search-results-button" onClick={() => setShowSearchResults(true)}>Eşleşmeleri gör ({matchedSearchCandidates.length})</button>
                   )}
                   {searchRun?.status === "failed" && <p>{errorMessage(new ApiError(500, searchRun.error_code ?? "search_failed"))}</p>}
-                  <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting}>
+                  <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting || searchRoles.length === 0}>
                     {searchRunning ? "Arama sürüyor…" : "Şimdi ilan ara"}
                   </button>
                 </div>
@@ -1058,7 +1183,7 @@ export default function App() {
           </div>
         ) : <CompaniesView token={token} onError={setError} onReviewed={() => refreshBase(token)} />}
       </main>
-      {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} />}
+      {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} onViewed={(candidateId) => { void recordViewed(candidateId); }} />}
     </div>
   );
 }

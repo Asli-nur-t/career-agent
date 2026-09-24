@@ -124,6 +124,7 @@ export type JobItem = {
   recommendation: string;
   matched_terms: string[];
   risk_flags: string[];
+  operator_viewed_at: string | null;
 };
 
 export type JobPage = {
@@ -154,6 +155,7 @@ export type JobDetail = {
   evidence: Record<string, EvidenceValue>[];
   first_seen_at: string;
   last_seen_at: string;
+  operator_viewed_at: string | null;
 };
 
 export type SearchRunCandidate = {
@@ -169,7 +171,10 @@ export type SearchRunCandidate = {
   activity_state: string;
   activity_code: string;
   disposition: string;
+  operator_viewed_at: string | null;
 };
+
+export type SearchMode = "quick" | "deep";
 
 export type SearchRun = {
   run_id: string;
@@ -194,6 +199,10 @@ export type SearchRun = {
       unknown?: number;
     };
     matched_candidates?: SearchRunCandidate[];
+    requested_roles?: string[];
+    search_mode?: SearchMode;
+    query_limit?: number;
+    result_limit_per_query?: number;
   };
   error_code: string | null;
   created_at: string;
@@ -372,10 +381,18 @@ export function getJobs(
 export function startProfileSearch(
   token: string,
   profile: string,
+  roles: string[],
+  searchMode: SearchMode,
 ): Promise<SearchRun> {
   return request(token, "/operator/search-runs", {
     method: "POST",
-    body: JSON.stringify({ profile, confirmed_external_search: true }),
+    body: JSON.stringify({
+      profile,
+      roles,
+      search_mode: searchMode,
+      confirmed_external_search: true,
+      force: true,
+    }),
   });
 }
 
@@ -389,6 +406,15 @@ export function getLatestProfileSearch(
 
 export function getJobDetail(token: string, id: string): Promise<JobDetail> {
   return request(token, `/operator/jobs/${encodeURIComponent(id)}`);
+}
+
+export function markJobViewed(
+  token: string,
+  id: string,
+): Promise<{ candidate_id: string; operator_viewed_at: string }> {
+  return request(token, `/operator/jobs/${encodeURIComponent(id)}/viewed`, {
+    method: "POST",
+  });
 }
 
 export function approveJob(

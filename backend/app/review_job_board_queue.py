@@ -37,6 +37,7 @@ class RankedCandidate:
     recommendation: str
     matched_terms: list[str]
     risk_flags: list[str]
+    operator_viewed_at: datetime | None = None
 
 
 def _bounded_int(value: str, *, minimum: int, maximum: int) -> int:
@@ -85,6 +86,7 @@ def rank_candidate(
     published_at: datetime | None = None,
     activity_state: str = "unknown",
     activity_code: str = "not_checked",
+    operator_viewed_at: datetime | None = None,
 ) -> RankedCandidate:
     extracted = extract_job_metadata(title, snippet)
     effective_location = extracted.location or location
@@ -149,6 +151,7 @@ def rank_candidate(
         published_at=effective_published_at,
         activity_state=effective_activity_state,
         activity_code=effective_activity_code,
+        operator_viewed_at=operator_viewed_at,
         score=score,
         recommendation=recommendation,
         matched_terms=result.matched_terms,
@@ -221,6 +224,7 @@ def load_queue(
             published_at=candidate.published_at,
             activity_state=candidate.activity_state,
             activity_code=candidate.activity_code,
+            operator_viewed_at=candidate.operator_viewed_at,
         )
         for candidate, company_name in rows
     ]

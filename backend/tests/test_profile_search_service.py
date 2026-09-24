@@ -9,12 +9,17 @@ from app.profile_search_service import (
     load_search_candidate_snapshots,
     run_profile_job_search,
 )
+from app.matching import CandidateProfileSpec
 
 
 def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
     state = SimpleNamespace(
-        spec=SimpleNamespace(),
+        spec=SimpleNamespace(
+            target_roles=["AI Engineer"],
+            secondary_roles=[],
+            tertiary_roles=[],
+        ),
         profile_id="profile-id",
         due=True,
     )
@@ -35,7 +40,12 @@ def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
 def test_profile_search_audits_only_its_unverified_candidates(monkeypatch) -> None:
     monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
     profile_id = uuid4()
-    spec = SimpleNamespace(config_hash=lambda: "a" * 64)
+    spec = SimpleNamespace(
+        config_hash=lambda: "a" * 64,
+        target_roles=["AI Engineer"],
+        secondary_roles=[],
+        tertiary_roles=[],
+    )
     state = SimpleNamespace(spec=spec, profile_id=profile_id, due=True)
     discovery = SimpleNamespace(
         queries=("query",),
@@ -140,3 +150,97 @@ def test_search_snapshot_keeps_suppressed_match_reason() -> None:
     assert result[0]["candidate_id"] == str(candidate_id)
     assert result[0]["disposition"] == "closed"
     assert result[0]["score"] == 65
+
+
+def test_profile_search_uses_requested_roles_without_mutating_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "test-serper-key")
+    profile_id = uuid4()
+    original = CandidateProfileSpec(
+        label="aslinur-default",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+    )
+    state = SimpleNamespace(spec=original, profile_id=profile_id, due=True)
+    discovery = SimpleNamespace(
+        queries=("query",),
+        raw_result_count=0,
+        filtered_result_count=0,
+        candidates=(),
+        exclusion_counts={},
+    )
+    persisted = {
+        "new_candidates": 0,
+        "refreshed_candidates": 0,
+        "suppressed_candidates": 0,
+    }
+    audit = {
+        "checked_count": 0,
+        "changed_count": 0,
+        "activity_counts": {"active": 0, "closed": 0, "unknown": 0},
+    }
+
+    with (
+        patch(
+            "app.profile_search_service.load_profile_search_state",
+            return_value=state,
+        ),
+        patch("app.profile_search_service.SerperClient", return_value=MagicMock()),
+        patch("app.profile_search_service.PublicATSClient", return_value=MagicMock()),
+        patch("app.profile_search_service.JobBoardActivityVerifier"),
+        patch("app.profile_search_service.JobBoardSearchConnector"),
+        patch(
+            "app.profile_search_service.discover_profile_candidates",
+            return_value=discovery,
+        ) as discover,
+        patch(
+            "app.profile_search_service.persist_profile_candidates",
+            return_value=persisted,
+        ),
+        patch(
+            "app.profile_search_service.audit_job_board_activity",
+            return_value=audit,
+        ),
+        patch(
+            "app.profile_search_service.reconcile_profile_candidates",
+            return_value=0,
+        ),
+        patch("app.profile_search_service.record_profile_job_search"),
+    ):
+        result = run_profile_job_search(
+            MagicMock(),
+            profile_label="aslinur-default",
+            requested_roles=["Platform Engineer", "Backend Engineer"],
+        )
+
+    effective = discover.call_args.args[1]
+    assert effective.target_roles == ["Platform Engineer", "Backend Engineer"]
+    assert discover.call_args.kwargs["search_role_groups"] == (
+        ("Platform Engineer", "Backend Engineer"),
+    )
+    assert original.target_roles == ["AI Engineer"]
+    assert result["requested_roles"] == ["Platform Engineer", "Backend Engineer"]
+    assert result["search_mode"] == "quick"
+    assert result["query_limit"] == 10
+
+
+def test_deep_search_splits_roles_into_bounded_groups() -> None:
+    from app.profile_search_service import _search_role_groups
+
+    assert _search_role_groups(
+        [
+            "AI Engineer",
+            "ML Engineer",
+            "NLP Engineer",
+            "Backend Engineer",
+            "Python Developer",
+            "Research Engineer",
+            "Data Scientist",
+        ],
+        "deep",
+    ) == (
+        ("AI Engineer", "ML Engineer", "NLP Engineer"),
+        ("Backend Engineer", "Python Developer", "Research Engineer"),
+        ("Data Scientist",),
+    )

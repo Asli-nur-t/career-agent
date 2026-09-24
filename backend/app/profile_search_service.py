@@ -35,6 +35,46 @@ class ProfileSearchError(RuntimeError):
         self.code = code
 
 
+SEARCH_MODE_QUERY_LIMITS = {"quick": 10, "deep": 20}
+DEEP_ROLE_GROUP_SIZE = 3
+
+
+def _validated_search_roles(values: Sequence[str]) -> list[str]:
+    if isinstance(values, (str, bytes)) or not 1 <= len(values) <= 10:
+        raise ValueError("search_roles_invalid")
+    roles: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        role = safe_text(value, 100)
+        marker = role.casefold()
+        if role and marker and marker not in seen:
+            seen.add(marker)
+            roles.append(role)
+    if not roles:
+        raise ValueError("search_roles_invalid")
+    return roles
+
+
+def _validated_search_mode(value: object) -> str:
+    mode = safe_text(value, 20).casefold()
+    if mode not in SEARCH_MODE_QUERY_LIMITS:
+        raise ValueError("search_mode_invalid")
+    return mode
+
+
+def _search_role_groups(
+    roles: Sequence[str],
+    search_mode: str,
+) -> tuple[tuple[str, ...], ...]:
+    cleaned = _validated_search_roles(roles)
+    if search_mode == "quick":
+        return (tuple(cleaned),)
+    return tuple(
+        tuple(cleaned[position:position + DEEP_ROLE_GROUP_SIZE])
+        for position in range(0, len(cleaned), DEEP_ROLE_GROUP_SIZE)
+    )
+
+
 def _disposition(candidate: JobBoardCandidate) -> str:
     if candidate.status == "approved":
         return "already_approved"
@@ -113,6 +153,11 @@ def load_search_candidate_snapshots(
             "activity_state": safe_text(candidate.activity_state, 30),
             "activity_code": safe_text(candidate.activity_code, 80),
             "disposition": _disposition(candidate),
+            "operator_viewed_at": (
+                candidate.operator_viewed_at.isoformat()
+                if getattr(candidate, "operator_viewed_at", None)
+                else None
+            ),
         })
     return snapshots
 
@@ -121,16 +166,40 @@ def run_profile_job_search(
     database: Engine,
     *,
     profile_label: str,
-    max_queries: int = 6,
+    max_queries: int = 20,
     max_results: int = 10,
     minimum_score: int = 20,
     delay_seconds: float = 1.0,
     force: bool = False,
+    requested_roles: Sequence[str] | None = None,
+    search_mode: str = "quick",
 ) -> dict[str, object]:
     """Run one bounded search and return a UI-safe aggregate result."""
     state = load_profile_search_state(database, profile_label=profile_label)
     if not state.due and not force:
         raise ProfileSearchError("cached")
+    mode = _validated_search_mode(search_mode)
+    query_limit = min(max_queries, SEARCH_MODE_QUERY_LIMITS[mode])
+    effective_profile = state.spec
+    effective_roles: list[str] = []
+    if requested_roles is not None:
+        effective_roles = _validated_search_roles(requested_roles)
+        effective_profile = state.spec.model_copy(
+            update={
+                "target_roles": effective_roles,
+                "secondary_roles": [],
+                "tertiary_roles": [],
+            }
+        )
+    else:
+        effective_roles = _validated_search_roles(
+            (
+                list(getattr(state.spec, "target_roles", []))
+                + list(getattr(state.spec, "secondary_roles", []))
+                + list(getattr(state.spec, "tertiary_roles", []))
+            )[:10]
+        )
+    search_role_groups = _search_role_groups(effective_roles, mode)
     serper_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not serper_key:
         raise ProfileSearchError("serper_not_configured")
@@ -159,11 +228,12 @@ def run_profile_job_search(
                     activity_providers=OFFICIAL_ATS_PROVIDERS,
                     expand_official_ats=True,
                 ),
-                state.spec,
-                max_queries=max_queries,
+                effective_profile,
+                max_queries=query_limit,
                 max_results=max_results,
                 minimum_score=minimum_score,
                 delay_seconds=delay_seconds,
+                search_role_groups=search_role_groups,
             )
             persisted = persist_profile_candidates(
                 database,
@@ -187,7 +257,7 @@ def run_profile_job_search(
             database,
             profile_id=state.profile_id,
             profile_hash=profile_hash,
-            profile=state.spec,
+            profile=effective_profile,
         )
         matched_candidates = load_search_candidate_snapshots(
             database,
@@ -226,4 +296,8 @@ def run_profile_job_search(
         "activity_changed_count": activity_audit["changed_count"],
         "activity_counts": activity_audit["activity_counts"],
         "matched_candidates": matched_candidates,
+        "requested_roles": effective_roles,
+        "search_mode": mode,
+        "query_limit": query_limit,
+        "result_limit_per_query": max_results,
     }

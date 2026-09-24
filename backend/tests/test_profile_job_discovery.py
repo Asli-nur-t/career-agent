@@ -75,7 +75,7 @@ def test_profile_discovery_filters_non_role_results_and_deduplicates() -> None:
     assert result.candidates[0].listing.external_id == "123456"
     assert result.candidates[0].score >= 55
     assert len(result.query_stats) == 2
-    assert result.query_stats[0].source_group == "official_ats"
+    assert result.query_stats[0].source_group == "job_boards"
     assert result.query_stats[0].provider_counts == {"linkedin": 2}
     assert result.query_stats[0].accepted_count == 1
 

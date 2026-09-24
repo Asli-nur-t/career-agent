@@ -33,9 +33,24 @@ korunur. CORS yalnızca yerel Vite originlerine, gerekli `GET`/`POST`
 metotlarına ve sınırlı header kümesine izin verir. İlan onayı ayrıca ilanın
 tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerektirir.
 
-Ana sayfadaki **Şimdi ilan ara** düğmesi profil bazlı ilan keşfini arka planda
-başlatır. Harici arama kotası kullanılmadan önce açık onay ister ve her çalışma
-en fazla altı sorguyla sınırlıdır. Aramada profile uyan fakat aktifliği henüz
+Ana sayfadaki **Şimdi ilan ara** düğmesi profil bazlı genel ilan keşfini arka
+planda başlatır. CV'den çıkarılan hedef roller varsayılan seçilir; operatör bu
+rolleri kaldırabilir veya çalışma özelinde yeni rol ekleyebilir. Seçim aday
+profilini değiştirmez. En fazla 10 rol kabul edilir. **Hızlı** tarama seçili
+rolleri tek Boolean grupta arar; **Derin** tarama rolleri en fazla üçlü gruplara
+böler. Her grup için LinkedIn, Kariyer.net, Indeed ve Glassdoor ayrı sorgulanır,
+ardından Greenhouse, Lever ve Ashby tek resmî ATS grubunda aranır. Böylece
+LinkedIn'in sonuçları tek başına doldurması önlenirken sorgu başına en fazla 10
+sonuç korunur. Hızlı tarama en fazla 10, derin tarama en fazla 20 sorguyla
+sınırlıdır.
+
+Günlük otomatik çalışma profil önbelleğine uyar. Operatörün açık onay verdiği
+manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol kümesi ve tarama
+modu beş dakika içinde yeniden kota kullanamaz. Farklı bir arama kapsamı için
+de ardışık manuel istekler arasında en az 30 saniye bulunur ve aynı profil için
+yalnızca bir çalışma eşzamanlı yürütülür. Harici arama kotası kullanılmadan
+önce açık onay istenir. Aramada
+profile uyan fakat aktifliği henüz
 kanıtlanmamış en fazla 20 ilan, SSRF korumalı okuyucuyla ve en fazla dört
 eşzamanlı istekle ayrıca denetlenir. Denetim yalnızca seçili profile ait
 `needs_review`/`unknown` kayıtlarını günceller; onaylanmış, reddedilmiş veya
@@ -54,6 +69,12 @@ elenmiş veya aktifliği kanıtlanamamış bir ilan bu ekranda nedeni ile görü
 ancak güvenli aktif ilan kuyruğuna eklenmez. Sonuç URL'leri API yanıtına
 alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dış
 metinleri React'in varsayılan escaping davranışıyla işler.
+
+İlan satırı veya son arama sonucundaki dış bağlantı ilk kez açıldığında aday
+kaydına `operator_viewed_at` yazılır. İlk görüntüleme zamanı sonraki açılışlarda
+değiştirilmez. Arayüz hiç açılmamış kayıtları **Yeni**, daha önce açılanları
+soluk **İncelendi** görünümüyle ayırır; görüntülemek ilanı onaylamaz veya
+reddetmez.
 
 Sol menüdeki **Şirketler** görünümü kayıtları 25'erli sayfalar hâlinde,
 profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Her

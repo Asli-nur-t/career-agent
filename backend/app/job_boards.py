@@ -945,7 +945,7 @@ def build_profile_job_queries(
 ) -> tuple[str, ...]:
     """Build bounded, tier-aware queries without interpolating operators."""
 
-    if not 1 <= max_queries <= 6:
+    if not 1 <= max_queries <= 20:
         raise ValueError("Profile job query limit is invalid.")
 
     def phrase(value: object, maximum: int) -> str:
@@ -989,19 +989,28 @@ def build_profile_job_queries(
     )
     source_groups = (
         (
+            "site:linkedin.com/jobs/view",
+            True,
+        ),
+        (
+            "site:kariyer.net/is-ilani",
+            True,
+        ),
+        (
+            "site:tr.indeed.com/viewjob",
+            True,
+        ),
+        (
+            "site:glassdoor.com/job-listing",
+            True,
+        ),
+        (
             "(site:job-boards.greenhouse.io OR "
             "site:boards.greenhouse.io OR "
             "site:jobs.lever.co OR "
             "site:jobs.eu.lever.co OR "
             "site:jobs.ashbyhq.com)",
             False,
-        ),
-        (
-            "(site:linkedin.com/jobs/view OR "
-            "site:kariyer.net/is-ilani OR "
-            "site:tr.indeed.com/viewjob OR "
-            "site:glassdoor.com/job-listing)",
-            True,
         ),
     )
     date_clause = (

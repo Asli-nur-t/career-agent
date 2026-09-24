@@ -50,10 +50,12 @@ class JobBoardTests(unittest.TestCase):
             '(remote OR uzaktan) ("Türkiye" OR "Turkey")',
             queries[0],
         )
-        self.assertNotIn("after:2026-08-22", queries[0])
+        self.assertIn("after:2026-08-22", queries[0])
         self.assertIn('"Python OR site:evil.example"', queries[1])
         self.assertIn('"Backend Geliştirici"', queries[1])
-        self.assertTrue(all("jobs.lever.co" in query for query in queries))
+        self.assertTrue(
+            all("linkedin.com/jobs/view" in query for query in queries)
+        )
 
         all_sources = build_profile_job_queries(
             (("AI Engineer",), ("Backend Engineer",), ("Mobile Developer",)),
@@ -62,18 +64,36 @@ class JobBoardTests(unittest.TestCase):
         )
         self.assertEqual(len(all_sources), 6)
         self.assertTrue(
-            all("jobs.ashbyhq.com" in query for query in all_sources[:3])
+            all("linkedin.com/jobs/view" in query for query in all_sources[:3])
         )
         self.assertTrue(
             all('("İstanbul")' in query for query in all_sources[:3])
         )
         self.assertIn('"Flutter Developer"', all_sources[2])
         self.assertTrue(
-            all("linkedin.com/jobs/view" in query for query in all_sources[3:])
+            all("kariyer.net/is-ilani" in query for query in all_sources[3:])
         )
         self.assertTrue(
             all('("İstanbul")' in query for query in all_sources[3:])
         )
+
+        balanced_sources = build_profile_job_queries(
+            (("AI Engineer", "Backend Engineer", "Mobile Developer"),),
+            preferred_locations=("İstanbul",),
+            max_queries=10,
+        )
+        self.assertEqual(len(balanced_sources), 5)
+        for marker in (
+            "linkedin.com/jobs/view",
+            "kariyer.net/is-ilani",
+            "tr.indeed.com/viewjob",
+            "glassdoor.com/job-listing",
+            "jobs.ashbyhq.com",
+        ):
+            self.assertEqual(
+                sum(marker in query for query in balanced_sources),
+                1,
+            )
 
     def test_activity_provider_filter_verifies_only_official_ats(self) -> None:
         results = [
@@ -120,6 +140,27 @@ class JobBoardTests(unittest.TestCase):
         self.assertEqual(calls, ["lever"])
         self.assertEqual(discovery.listings[0].activity_state, "active")
         self.assertEqual(discovery.listings[1].activity_state, "unknown")
+
+    def test_market_queries_cover_ten_roles_with_a_hard_cap(self) -> None:
+        role_groups = tuple(
+            tuple(f"Role {index}" for index in range(start, min(start + 3, 10)))
+            for start in range(0, 10, 3)
+        )
+        queries = build_profile_job_queries(
+            role_groups,
+            preferred_locations=("İstanbul",),
+            max_queries=20,
+        )
+
+        self.assertEqual(len(queries), 20)
+        for marker in (
+            "linkedin.com/jobs/view",
+            "kariyer.net/is-ilani",
+            "tr.indeed.com/viewjob",
+            "glassdoor.com/job-listing",
+            "jobs.ashbyhq.com",
+        ):
+            self.assertEqual(sum(marker in query for query in queries), 4)
 
     def test_company_hint_is_extracted_from_linkedin_title(self) -> None:
         self.assertEqual(
