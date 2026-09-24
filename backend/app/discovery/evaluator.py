@@ -1,4 +1,6 @@
 import json
+import re
+import unicodedata
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -24,6 +26,24 @@ ALLOWED_EXTERNAL_CAREERS_DOMAINS = {
     "workable.com",
 }
 
+GENERIC_COMPANY_TOKENS = {
+    "anonim",
+    "as",
+    "bilgi",
+    "bilisim",
+    "danismanlik",
+    "hizmetleri",
+    "limited",
+    "ltd",
+    "sanayi",
+    "sirketi",
+    "teknoloji",
+    "ticaret",
+    "ve",
+    "yazilim",
+}
+CAREER_PATH_TOKENS = {"career", "careers", "is-ilanlari", "jobs", "kariyer"}
+
 
 class EvaluationError(RuntimeError):
     def __init__(self, code: str) -> None:
@@ -41,6 +61,146 @@ class CompanyEvaluator(Protocol):
     ) -> CompanyAssessment: ...
 
     def close(self) -> None: ...
+
+
+def _identity_text(value: object) -> str:
+    text = safe_text(value, 2000).casefold().translate(
+        str.maketrans({"ı": "i", "ş": "s", "ğ": "g", "ü": "u", "ö": "o", "ç": "c"})
+    )
+    text = unicodedata.normalize("NFKD", text)
+    return " ".join(
+        re.findall(
+            r"[a-z0-9]+",
+            "".join(char for char in text if not unicodedata.combining(char)),
+        )
+    )
+
+
+def _distinctive_tokens(company_name: str) -> list[str]:
+    return [
+        token
+        for token in _identity_text(company_name).split()
+        if len(token) >= 4 and token not in GENERIC_COMPANY_TOKENS
+    ]
+
+
+def deterministic_assessment(
+    company_name: str,
+    results: list[SearchResult],
+) -> CompanyAssessment | None:
+    """Resolve only an unambiguous official-domain candidate without an LLM."""
+    company_identity = _identity_text(company_name)
+    distinctive = _distinctive_tokens(company_name)
+    if not distinctive:
+        return None
+
+    candidates: list[tuple[int, str, SearchResult]] = []
+    linkedin_candidate: str | None = None
+    for result in results:
+        try:
+            normalized = normalize_public_url(result.url)
+        except ValueError:
+            continue
+        parsed = urlsplit(normalized)
+        hostname = _without_www((parsed.hostname or "").lower())
+        result_identity = _identity_text(f"{result.title} {result.snippet}")
+        hostname_identity = _identity_text(hostname).replace(" ", "")
+
+        try:
+            linkedin_url = normalize_linkedin_company_url(normalized)
+        except ValueError:
+            linkedin_url = None
+        if linkedin_url is not None and any(
+            token in result_identity or token in hostname_identity
+            for token in distinctive
+        ):
+            linkedin_candidate = linkedin_candidate or linkedin_url
+            continue
+        if is_denied_official_website(normalized):
+            continue
+
+        host_matches = [token for token in distinctive if token in hostname_identity]
+        text_matches = [token for token in distinctive if token in result_identity]
+        exact_identity = company_identity in result_identity
+        if not exact_identity and not (
+            host_matches
+            and set(host_matches).intersection(text_matches)
+        ):
+            continue
+        score = (6 if exact_identity else 0) + 2 * len(host_matches) + len(text_matches)
+        root = f"{parsed.scheme}://{parsed.netloc}/"
+        candidates.append((score, normalize_public_url(root), result))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, website, best_result = candidates[0]
+    competing_hosts = {
+        candidate_url
+        for score, candidate_url, _result in candidates
+        if score == best_score
+    }
+    if len(competing_hosts) != 1:
+        return None
+
+    careers_url: str | None = None
+    website_host = _without_www((urlsplit(website).hostname or "").lower())
+    for result in results:
+        try:
+            normalized = normalize_public_url(result.url)
+        except ValueError:
+            continue
+        parsed = urlsplit(normalized)
+        result_host = _without_www((parsed.hostname or "").lower())
+        path = parsed.path.casefold().strip("/")
+        if result_host == website_host and any(
+            token in path for token in CAREER_PATH_TOKENS
+        ):
+            careers_url = normalized
+            break
+
+    return CompanyAssessment(
+        company_name=company_name,
+        brand_name=None,
+        official_website_candidate=website,
+        careers_url_candidate=careers_url,
+        official_linkedin_candidate=linkedin_candidate,
+        confidence=("high" if company_identity in _identity_text(
+            f"{best_result.title} {best_result.snippet}"
+        ) else "medium"),
+        status="candidate_found",
+        evidence=[
+            safe_text(
+                f"{best_result.title}: {website} alan adı şirket adıyla eşleşti.",
+                500,
+            )
+        ],
+        reason=(
+            "Arama sonucu başlığı, açıklaması ve alan adı şirket kimliğiyle "
+            "tekil olarak eşleşti."
+        ),
+    )
+
+
+class HybridCompanyEvaluator:
+    """Use strict deterministic matching first and the configured model as fallback."""
+
+    def __init__(self, fallback: CompanyEvaluator) -> None:
+        self._fallback = fallback
+        self.model = safe_text(f"hybrid/{fallback.model}", 100)
+
+    def evaluate(
+        self,
+        company_name: str,
+        results: list[SearchResult],
+    ) -> CompanyAssessment:
+        deterministic = deterministic_assessment(company_name, results)
+        if deterministic is not None:
+            return deterministic
+        return self._fallback.evaluate(company_name, results)
+
+    def close(self) -> None:
+        self._fallback.close()
 
 
 def company_assessment_output_schema() -> dict[str, object]:

@@ -83,6 +83,31 @@ export type CompanyDiscoveryResult = {
   error_code: string | null;
 };
 
+export type CompanyDiscoveryRun = {
+  run_id: string;
+  status:
+    | "queued"
+    | "running"
+    | "pause_requested"
+    | "paused"
+    | "succeeded"
+    | "failed";
+  scope: "unprofiled";
+  query_budget: number;
+  query_count: number;
+  total_count: number;
+  queued_count: number;
+  running_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  profile_counts: Record<string, number>;
+  error_counts: Record<string, number>;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 export type JobItem = {
   candidate_id: string;
   provider: string;
@@ -288,6 +313,46 @@ export function discoverCompany(
     method: "POST",
     body: JSON.stringify({ confirmed_external_search: true }),
   });
+}
+
+export function getLatestCompanyDiscoveryRun(
+  token: string,
+): Promise<CompanyDiscoveryRun | null> {
+  return request(token, "/operator/company-discovery-runs/latest");
+}
+
+export function startCompanyDiscoveryRun(
+  token: string,
+): Promise<CompanyDiscoveryRun> {
+  return request(token, "/operator/company-discovery-runs", {
+    method: "POST",
+    body: JSON.stringify({
+      confirmed_external_search: true,
+      query_budget: 2200,
+    }),
+  });
+}
+
+export function pauseCompanyDiscoveryRun(
+  token: string,
+  runId: string,
+): Promise<CompanyDiscoveryRun> {
+  return request(
+    token,
+    `/operator/company-discovery-runs/${encodeURIComponent(runId)}/pause`,
+    { method: "POST", body: JSON.stringify({ confirmed: true }) },
+  );
+}
+
+export function resumeCompanyDiscoveryRun(
+  token: string,
+  runId: string,
+): Promise<CompanyDiscoveryRun> {
+  return request(
+    token,
+    `/operator/company-discovery-runs/${encodeURIComponent(runId)}/resume`,
+    { method: "POST", body: JSON.stringify({ confirmed: true }) },
+  );
 }
 
 export function getJobs(

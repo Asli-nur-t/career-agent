@@ -312,6 +312,137 @@ class DiscoveryAttempt(Base):
         server_default=func.now(),
     )
 
+
+class CompanyDiscoveryRun(Base):
+    __tablename__ = "company_discovery_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'pause_requested', "
+            "'paused', 'succeeded', 'failed')",
+            name="ck_company_discovery_runs_status",
+        ),
+        CheckConstraint(
+            "scope = 'unprofiled'",
+            name="ck_company_discovery_runs_scope",
+        ),
+        CheckConstraint(
+            "query_budget BETWEEN 3 AND 2200",
+            name="ck_company_discovery_runs_query_budget",
+        ),
+        CheckConstraint(
+            "query_count BETWEEN 0 AND query_budget",
+            name="ck_company_discovery_runs_query_count",
+        ),
+        CheckConstraint(
+            "total_count BETWEEN 0 AND 1000",
+            name="ck_company_discovery_runs_total_count",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR char_length(btrim(error_code)) > 0",
+            name="ck_company_discovery_runs_error_not_blank",
+        ),
+        Index(
+            "uq_company_discovery_runs_active",
+            "scope",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'running', 'pause_requested', 'paused')"
+            ),
+        ),
+        Index(
+            "ix_company_discovery_runs_created",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    status: Mapped[str] = mapped_column(
+        String(30), default="queued", server_default="queued", nullable=False
+    )
+    scope: Mapped[str] = mapped_column(
+        String(30), default="unprofiled", server_default="unprofiled", nullable=False
+    )
+    query_budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    query_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    total_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class CompanyDiscoveryRunItem(Base):
+    __tablename__ = "company_discovery_run_items"
+    __table_args__ = (
+        CheckConstraint(
+            "position BETWEEN 1 AND 1000",
+            name="ck_company_discovery_run_items_position",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_company_discovery_run_items_status",
+        ),
+        CheckConstraint(
+            "profile_status IS NULL OR profile_status IN "
+            "('candidate_found', 'verified', 'needs_review', 'not_found')",
+            name="ck_company_discovery_run_items_profile_status",
+        ),
+        CheckConstraint(
+            "attempt_count BETWEEN 0 AND 3",
+            name="ck_company_discovery_run_items_attempt_count",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR char_length(btrim(error_code)) > 0",
+            name="ck_company_discovery_run_items_error_not_blank",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "position",
+            name="uq_company_discovery_run_items_position",
+        ),
+        Index(
+            "ix_company_discovery_run_items_queue",
+            "run_id",
+            "status",
+            "position",
+        ),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("company_discovery_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="queued", server_default="queued", nullable=False
+    )
+    profile_status: Mapped[str | None] = mapped_column(String(30))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CareerSource(Base):
     __tablename__ = "career_sources"
     __table_args__ = (

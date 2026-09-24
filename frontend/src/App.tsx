@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   CompanyDetail,
+  CompanyDiscoveryRun,
   CompanyItem,
   CompanyPage,
   CompanyProfileStatus,
@@ -17,6 +18,7 @@ import {
   discoverCompany,
   getCompanyDetail,
   getCompanies,
+  getLatestCompanyDiscoveryRun,
   getJobDetail,
   getJobs,
   getProfiles,
@@ -24,6 +26,9 @@ import {
   getLatestProfileSearch,
   rejectJob,
   rejectCompany,
+  pauseCompanyDiscoveryRun,
+  resumeCompanyDiscoveryRun,
+  startCompanyDiscoveryRun,
   startProfileSearch,
 } from "./api";
 
@@ -44,6 +49,8 @@ const labels: Record<string, string> = {
   internship: "Staj",
   queued: "Sırada",
   running: "Aranıyor",
+  pause_requested: "Duraklatılıyor",
+  paused: "Duraklatıldı",
   succeeded: "Tamamlandı",
   failed: "Başarısız",
   candidates_found: "Aday bulundu",
@@ -121,6 +128,13 @@ function errorMessage(error: unknown): string {
       evaluator_not_configured: "Şirket değerlendirme modeli backend üzerinde yapılandırılmamış.",
       company_discovery_failed: "Şirket profil araması güvenli şekilde sonlandırıldı.",
       rate_limited: "Arama sağlayıcısı geçici olarak istek sınırı uyguladı.",
+      invented_url: "Modelin önerdiği bağlantı arama sonuçlarında doğrulanamadı.",
+      company_discovery_run_active: "Toplu şirket taraması zaten çalışıyor veya duraklatılmış.",
+      company_discovery_run_not_found: "Toplu tarama kaydı bulunamadı.",
+      company_discovery_run_not_active: "Tamamlanmış bir tarama duraklatılamaz.",
+      company_discovery_run_not_paused: "Yalnızca duraklatılmış bir tarama sürdürülebilir.",
+      company_discovery_run_unavailable: "Toplu tarama oluşturuldu ancak yeniden okunamadı.",
+      company_discovery_run_failed: "Toplu şirket taraması güvenli şekilde durduruldu.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -590,6 +604,12 @@ function CompaniesView({ token, onError, onReviewed }: {
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [discoveryRun, setDiscoveryRun] = useState<CompanyDiscoveryRun | null>(null);
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
+
+  const discoveryActive = discoveryRun?.status === "queued"
+    || discoveryRun?.status === "running"
+    || discoveryRun?.status === "pause_requested";
 
   useEffect(() => {
     let cancelled = false;
@@ -601,6 +621,37 @@ function CompaniesView({ token, onError, onReviewed }: {
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [token, query, profileStatus, offset, onError, reloadVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getLatestCompanyDiscoveryRun(token)
+      .then((run) => { if (!cancelled) setDiscoveryRun(run); })
+      .catch((caught) => { if (!cancelled) onError(errorMessage(caught)); });
+    return () => { cancelled = true; };
+  }, [token, onError]);
+
+  useEffect(() => {
+    if (!discoveryActive) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const run = await getLatestCompanyDiscoveryRun(token);
+        if (cancelled) return;
+        setDiscoveryRun(run);
+        if (run && (run.status === "succeeded" || run.status === "failed")) {
+          setReloadVersion((current) => current + 1);
+          await onReviewed();
+        }
+      } catch (caught) {
+        if (!cancelled) onError(errorMessage(caught));
+      }
+    };
+    const timer = window.setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token, discoveryActive, onError, onReviewed]);
 
   async function openCompany(companyId: string) {
     if (detailBusy) return;
@@ -627,10 +678,64 @@ function CompaniesView({ token, onError, onReviewed }: {
     setQuery(queryInput.trim());
   }
 
+  async function startBulkDiscovery() {
+    if (discoveryBusy || discoveryActive) return;
+    if (!window.confirm(
+      "Profili olmayan tüm şirketler taransın mı? En fazla 2.200 harici arama sorgusu kullanılacak; işlem duraklatılabilir.",
+    )) return;
+    setDiscoveryBusy(true);
+    onError(null);
+    try {
+      setDiscoveryRun(await startCompanyDiscoveryRun(token));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "company_discovery_run_active") {
+        setDiscoveryRun(await getLatestCompanyDiscoveryRun(token));
+      } else {
+        onError(errorMessage(caught));
+      }
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }
+
+  async function pauseBulkDiscovery() {
+    if (!discoveryRun || discoveryBusy || !discoveryActive) return;
+    setDiscoveryBusy(true);
+    onError(null);
+    try {
+      setDiscoveryRun(await pauseCompanyDiscoveryRun(token, discoveryRun.run_id));
+    } catch (caught) {
+      onError(errorMessage(caught));
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }
+
+  async function resumeBulkDiscovery() {
+    if (!discoveryRun || discoveryBusy || discoveryRun.status !== "paused") return;
+    setDiscoveryBusy(true);
+    onError(null);
+    try {
+      setDiscoveryRun(await resumeCompanyDiscoveryRun(token, discoveryRun.run_id));
+    } catch (caught) {
+      onError(errorMessage(caught));
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }
+
   const limit = page?.limit ?? 25;
   const total = page?.total ?? 0;
   const rangeStart = total === 0 ? 0 : (page?.offset ?? 0) + 1;
   const rangeEnd = Math.min((page?.offset ?? 0) + (page?.items.length ?? 0), total);
+  const discoveryProcessed = (discoveryRun?.succeeded_count ?? 0)
+    + (discoveryRun?.failed_count ?? 0);
+  const discoveryProgress = discoveryRun?.total_count
+    ? Math.min(100, Math.round((discoveryProcessed / discoveryRun.total_count) * 100))
+    : 0;
+  const discoveredProfiles = discoveryRun
+    ? Object.values(discoveryRun.profile_counts).reduce((sum, count) => sum + count, 0)
+    : 0;
 
   return (
     <section className="companies-panel">
@@ -668,6 +773,51 @@ function CompaniesView({ token, onError, onReviewed }: {
           </label>
         </form>
       </div>
+      <section className={`bulk-discovery ${discoveryRun?.status ?? "idle"}`}>
+        <div className="bulk-discovery-head">
+          <div>
+            <p className="eyebrow">TOPLU PROFİL KEŞFİ</p>
+            <h3>Profilsiz şirketleri güvenli ve kalıcı kuyrukta tara</h3>
+            <span>
+              Kesin eşleşmeler doğrudan işlenir; değerlendirme modeli yalnızca belirsiz sonuçlarda kullanılır.
+            </span>
+          </div>
+          <div className="bulk-discovery-actions">
+            {discoveryRun?.status === "paused" ? (
+              <button className="primary" onClick={resumeBulkDiscovery} disabled={discoveryBusy}>Taramayı sürdür</button>
+            ) : discoveryActive ? (
+              <button className="ghost" onClick={pauseBulkDiscovery} disabled={discoveryBusy || discoveryRun?.status === "pause_requested"}>
+                {discoveryRun?.status === "pause_requested" ? "Duraklatılıyor…" : "Duraklat"}
+              </button>
+            ) : (
+              <button className="primary" onClick={startBulkDiscovery} disabled={discoveryBusy}>
+                {discoveryBusy ? "Başlatılıyor…" : "Tüm profilsiz şirketleri tara"}
+              </button>
+            )}
+          </div>
+        </div>
+        {discoveryRun && (
+          <div className="bulk-discovery-status">
+            <div className="bulk-progress-label">
+              <strong>{label(discoveryRun.status)}</strong>
+              <span>{discoveryProcessed} / {discoveryRun.total_count} şirket · %{discoveryProgress}</span>
+            </div>
+            <div className="bulk-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={discoveryProgress}>
+              <i style={{ width: `${discoveryProgress}%` }} />
+            </div>
+            <div className="bulk-stat-grid">
+              <span><b>{discoveryRun.queued_count}</b>Sırada</span>
+              <span><b>{discoveryRun.running_count}</b>İşleniyor</span>
+              <span><b>{discoveredProfiles}</b>Profil sonucu</span>
+              <span><b>{discoveryRun.failed_count}</b>Hata</span>
+              <span><b>{discoveryRun.query_count}</b>{discoveryRun.query_budget} sorgudan</span>
+            </div>
+            {discoveryRun.error_code && (
+              <p className="bulk-run-error">{errorMessage(new ApiError(500, discoveryRun.error_code))}</p>
+            )}
+          </div>
+        )}
+      </section>
       <div className="company-readonly-note">
         Şirket satırındaki “İncele” ile kaynakları ve kanıtları görebilir; yalnızca bekleyen profilleri açık onayla doğrulayabilir veya reddedebilirsin.
       </div>

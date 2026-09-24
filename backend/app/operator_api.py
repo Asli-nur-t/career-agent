@@ -15,6 +15,16 @@ from app.company_profile_search_service import (
     CompanyProfileSearchError,
     discover_company_profile,
 )
+from app.company_discovery_runs import (
+    CompanyDiscoveryRunError,
+    CompanyDiscoveryRunSnapshot,
+    execute_company_discovery_run,
+    load_company_discovery_run,
+    load_latest_company_discovery_run,
+    pause_company_discovery_run,
+    queue_company_discovery_run,
+    resume_company_discovery_run,
+)
 from app.discovery.safety import (
     is_denied_official_website,
     normalize_linkedin_company_url,
@@ -190,6 +200,47 @@ class CompanyDiscoveryResponse(BaseModel):
     profile_updated: bool
     verification_code: str | None
     error_code: str | None
+
+
+class StartCompanyDiscoveryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_external_search: Literal[True]
+    query_budget: int = Field(default=2200, ge=3, le=2200)
+
+
+class ConfirmCompanyDiscoveryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: Literal[True]
+
+
+class CompanyDiscoveryRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    status: Literal[
+        "queued",
+        "running",
+        "pause_requested",
+        "paused",
+        "succeeded",
+        "failed",
+    ]
+    scope: Literal["unprofiled"]
+    query_budget: int = Field(ge=3, le=2200)
+    query_count: int = Field(ge=0, le=2200)
+    total_count: int = Field(ge=0, le=1000)
+    queued_count: int = Field(ge=0, le=1000)
+    running_count: int = Field(ge=0, le=4)
+    succeeded_count: int = Field(ge=0, le=1000)
+    failed_count: int = Field(ge=0, le=1000)
+    profile_counts: dict[str, int]
+    error_counts: dict[str, int]
+    error_code: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
 
 
 class OperatorJobItem(BaseModel):
@@ -804,6 +855,32 @@ def _company_discovery_error(
     )
 
 
+def _company_discovery_run_error(
+    error: CompanyDiscoveryRunError,
+) -> HTTPException:
+    error_code = error.code
+    if error_code == "company_discovery_run_not_found":
+        status_code = status.HTTP_404_NOT_FOUND
+    elif error_code in {
+        "company_discovery_run_active",
+        "company_discovery_run_not_active",
+        "company_discovery_run_not_paused",
+    }:
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code},
+    )
+
+
+def _company_run_response(
+    snapshot: CompanyDiscoveryRunSnapshot,
+) -> CompanyDiscoveryRunResponse:
+    return CompanyDiscoveryRunResponse.model_validate(snapshot)
+
+
 def _search_run_response(
     run: ProfileJobSearchRun,
     *,
@@ -1022,6 +1099,120 @@ def operator_discover_company(
         return CompanyDiscoveryResponse.model_validate(result)
     except CompanyProfileSearchError as error:
         raise _company_discovery_error(error) from None
+
+
+@router.post(
+    "/company-discovery-runs",
+    response_model=CompanyDiscoveryRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def operator_start_company_discovery_run(
+    request: StartCompanyDiscoveryRunRequest,
+    background_tasks: BackgroundTasks,
+) -> CompanyDiscoveryRunResponse:
+    _ = request.confirmed_external_search
+    try:
+        run_id = queue_company_discovery_run(
+            engine,
+            query_budget=request.query_budget,
+        )
+        snapshot = load_company_discovery_run(engine, run_id)
+    except CompanyDiscoveryRunError as error:
+        raise _company_discovery_run_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if snapshot is None or snapshot.run_id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "company_discovery_run_unavailable"},
+        )
+    if snapshot.total_count:
+        background_tasks.add_task(
+            execute_company_discovery_run,
+            engine,
+            run_id,
+        )
+    return _company_run_response(snapshot)
+
+
+@router.get(
+    "/company-discovery-runs/latest",
+    response_model=CompanyDiscoveryRunResponse | None,
+)
+def operator_latest_company_discovery_run(
+) -> CompanyDiscoveryRunResponse | None:
+    try:
+        snapshot = load_latest_company_discovery_run(engine)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    return _company_run_response(snapshot) if snapshot is not None else None
+
+
+@router.post(
+    "/company-discovery-runs/{run_id}/pause",
+    response_model=CompanyDiscoveryRunResponse,
+)
+def operator_pause_company_discovery_run(
+    run_id: UUID,
+    request: ConfirmCompanyDiscoveryRunRequest,
+) -> CompanyDiscoveryRunResponse:
+    _ = request.confirmed
+    try:
+        pause_company_discovery_run(engine, run_id)
+        snapshot = load_company_discovery_run(engine, run_id)
+    except CompanyDiscoveryRunError as error:
+        raise _company_discovery_run_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if snapshot is None or snapshot.run_id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "company_discovery_run_not_found"},
+        )
+    return _company_run_response(snapshot)
+
+
+@router.post(
+    "/company-discovery-runs/{run_id}/resume",
+    response_model=CompanyDiscoveryRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def operator_resume_company_discovery_run(
+    run_id: UUID,
+    request: ConfirmCompanyDiscoveryRunRequest,
+    background_tasks: BackgroundTasks,
+) -> CompanyDiscoveryRunResponse:
+    _ = request.confirmed
+    try:
+        resume_company_discovery_run(engine, run_id)
+        snapshot = load_company_discovery_run(engine, run_id)
+    except CompanyDiscoveryRunError as error:
+        raise _company_discovery_run_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if snapshot is None or snapshot.run_id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "company_discovery_run_not_found"},
+        )
+    background_tasks.add_task(
+        execute_company_discovery_run,
+        engine,
+        run_id,
+    )
+    return _company_run_response(snapshot)
 
 
 @router.post(

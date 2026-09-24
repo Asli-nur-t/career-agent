@@ -77,6 +77,18 @@ döndürmez; yalnızca sınırlı sonuç sayıları ve güvenli durum kodları a
 aktarılır. Sonuç `candidate_found` veya `needs_review` ise bağlantılar yine insan
 onayı olmadan doğrulanmış sayılmaz.
 
+Şirketler ekranındaki **Tüm profilsiz şirketleri tara** işlemi sayfa sayfa elle
+ilerlemek yerine bütün profilsiz kayıtları kalıcı bir kuyruğa alır. Çalışma en
+fazla 2.200 harici sorguyla ve dört eşzamanlı şirketle sınırlıdır; her şirket
+için en fazla üç sorgu ayrılır. Arama sonucundaki alan adı ile şirket kimliği
+kesin eşleşiyorsa deterministik değerlendirme kullanılır, yalnızca belirsiz
+sonuçlar yapılandırılmış modele gönderilir. İlerleme ve sorgu tüketimi
+veritabanında tutulur; işlem arayüzden duraklatılıp sürdürülebilir. Backend
+kesilirse 15 dakika boyunca güncellenmeyen çalışma güvenli biçimde
+`worker_interrupted` durumuyla duraklatılır ve tamamlanan şirketler yeniden
+taranmadan kaldığı yerden sürdürülebilir. Bulunan profiller yine insan onayı
+bekler; toplu tarama hiçbir şirketi kendiliğinden doğrulamaz.
+
 Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
 
 ```bash

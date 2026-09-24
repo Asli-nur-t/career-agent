@@ -9,6 +9,10 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("APP_DB_PASSWORD", "test-only-password")
 
 from app.main import app
+from app.company_discovery_runs import (
+    CompanyDiscoveryRunError,
+    CompanyDiscoveryRunSnapshot,
+)
 from app.company_profile_search_service import CompanyProfileSearchError
 from app.operator_api import (
     OperatorSummary,
@@ -31,6 +35,32 @@ def _headers() -> dict[str, str]:
 
 def _client() -> TestClient:
     return TestClient(app, base_url="http://localhost")
+
+
+def _company_run_snapshot(
+    *,
+    run_id=None,
+    status="queued",
+) -> CompanyDiscoveryRunSnapshot:
+    now = datetime.now(timezone.utc)
+    return CompanyDiscoveryRunSnapshot(
+        run_id=run_id or uuid4(),
+        status=status,
+        scope="unprofiled",
+        query_budget=2200,
+        query_count=0,
+        total_count=10,
+        queued_count=10 if status in {"queued", "paused"} else 0,
+        running_count=0,
+        succeeded_count=0,
+        failed_count=0,
+        profile_counts={},
+        error_counts={},
+        error_code=None,
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+    )
 
 
 def test_operator_api_fails_closed_without_configured_token(
@@ -331,6 +361,117 @@ def test_company_discovery_cooldown_maps_to_rate_limit(monkeypatch) -> None:
     assert response.json()["detail"]["error_code"] == (
         "company_search_cooldown"
     )
+
+
+def test_bulk_company_discovery_requires_explicit_confirmation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+
+    response = _client().post(
+        "/operator/company-discovery-runs",
+        headers=_headers(),
+        json={"confirmed_external_search": False, "query_budget": 2200},
+    )
+
+    assert response.status_code == 422
+
+
+def test_operator_can_queue_budgeted_company_discovery(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    run_id = uuid4()
+    snapshot = _company_run_snapshot(run_id=run_id)
+    with (
+        patch(
+            "app.operator_api.queue_company_discovery_run",
+            return_value=run_id,
+        ) as queue,
+        patch(
+            "app.operator_api.load_company_discovery_run",
+            return_value=snapshot,
+        ),
+        patch("app.operator_api.execute_company_discovery_run") as execute,
+    ):
+        response = _client().post(
+            "/operator/company-discovery-runs",
+            headers=_headers(),
+            json={
+                "confirmed_external_search": True,
+                "query_budget": 2200,
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["run_id"] == str(run_id)
+    assert response.json()["query_budget"] == 2200
+    queue.assert_called_once()
+    assert queue.call_args.kwargs == {"query_budget": 2200}
+    execute.assert_called_once()
+
+
+def test_operator_rejects_parallel_company_discovery(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    with patch(
+        "app.operator_api.queue_company_discovery_run",
+        side_effect=CompanyDiscoveryRunError("company_discovery_run_active"),
+    ):
+        response = _client().post(
+            "/operator/company-discovery-runs",
+            headers=_headers(),
+            json={"confirmed_external_search": True, "query_budget": 2200},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == (
+        "company_discovery_run_active"
+    )
+
+
+def test_company_discovery_pause_uses_requested_run(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    run_id = uuid4()
+    snapshot = _company_run_snapshot(run_id=run_id, status="pause_requested")
+    with (
+        patch("app.operator_api.pause_company_discovery_run") as pause,
+        patch(
+            "app.operator_api.load_company_discovery_run",
+            return_value=snapshot,
+        ) as load,
+    ):
+        response = _client().post(
+            f"/operator/company-discovery-runs/{run_id}/pause",
+            headers=_headers(),
+            json={"confirmed": True},
+        )
+
+    assert response.status_code == 200
+    pause.assert_called_once()
+    assert pause.call_args.args[1] == run_id
+    assert load.call_args.args[1] == run_id
+
+
+def test_company_discovery_resume_schedules_requested_run(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    run_id = uuid4()
+    snapshot = _company_run_snapshot(run_id=run_id, status="paused")
+    with (
+        patch("app.operator_api.resume_company_discovery_run") as resume,
+        patch(
+            "app.operator_api.load_company_discovery_run",
+            return_value=snapshot,
+        ),
+        patch("app.operator_api.execute_company_discovery_run") as execute,
+    ):
+        response = _client().post(
+            f"/operator/company-discovery-runs/{run_id}/resume",
+            headers=_headers(),
+            json={"confirmed": True},
+        )
+
+    assert response.status_code == 202
+    resume.assert_called_once()
+    assert resume.call_args.args[1] == run_id
+    execute.assert_called_once()
 
 
 def test_candidate_detail_sanitizes_evidence() -> None:

@@ -1,4 +1,4 @@
-from app.discovery.evaluator import CompanyEvaluator
+from app.discovery.evaluator import CompanyEvaluator, HybridCompanyEvaluator
 
 
 class EvaluatorConfigurationError(RuntimeError):
@@ -18,9 +18,11 @@ def build_evaluator(
         if provider == "ollama":
             from app.discovery.ollama import OllamaEvaluator
 
-            return OllamaEvaluator(
-                model=ollama_model,
-                base_url=ollama_base_url,
+            return HybridCompanyEvaluator(
+                OllamaEvaluator(
+                    model=ollama_model,
+                    base_url=ollama_base_url,
+                )
             )
         if provider == "gemini":
             from app.discovery.gemini import GeminiEvaluator
@@ -29,7 +31,7 @@ def build_evaluator(
                 raise EvaluatorConfigurationError(
                     "GEMINI_API_KEY is required for Gemini."
                 )
-            return GeminiEvaluator(gemini_key)
+            return HybridCompanyEvaluator(GeminiEvaluator(gemini_key))
     except ValueError as error:
         raise EvaluatorConfigurationError(
             "Evaluator configuration is invalid."
