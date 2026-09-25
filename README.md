@@ -33,20 +33,35 @@ korunur. CORS yalnızca yerel Vite originlerine, gerekli `GET`/`POST`
 metotlarına ve sınırlı header kümesine izin verir. İlan onayı ayrıca ilanın
 tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerektirir.
 
-Ana sayfadaki **Şimdi ilan ara** düğmesi profil bazlı genel ilan keşfini arka
-planda başlatır. CV'den çıkarılan hedef roller varsayılan seçilir; operatör bu
+Sol menüdeki **Genel ilan arama** ekranı şirket veri tabanından ve doğrulanmış
+şirket sayısından bağımsız profil bazlı ilan keşfini arka planda başlatır.
+CV'den çıkarılan hedef roller varsayılan seçilir; operatör bu
 rolleri kaldırabilir veya çalışma özelinde yeni rol ekleyebilir. Seçim aday
-profilini değiştirmez. En fazla 10 rol kabul edilir. **Hızlı** tarama seçili
+profilini değiştirmez. En fazla 10 rol ve üç konum kabul edilir. Konum
+girilmezse profil tercihleri kullanılır. Uzaktan, hibrit ve iş yerinde çalışma
+biçimleri; 7-90 günlük ilan yaşı; LinkedIn, Kariyer.net, Indeed, Glassdoor ve
+resmî ATS kaynakları ayrı ayrı seçilebilir. Tüm değerler sunucuda uzunluk,
+aralık ve allowlist kontrollerinden geçirilir. **Hızlı** tarama seçili
 rolleri tek Boolean grupta arar; **Derin** tarama rolleri en fazla üçlü gruplara
-böler. Her grup için LinkedIn, Kariyer.net, Indeed ve Glassdoor ayrı sorgulanır,
-ardından Greenhouse, Lever ve Ashby tek resmî ATS grubunda aranır. Böylece
+böler. Seçilen her genel iş sitesi ayrı sorgulanır; resmî ATS seçeneği
+Greenhouse, Lever ve Ashby'yi tek grupta arar. Böylece
 LinkedIn'in sonuçları tek başına doldurması önlenirken sorgu başına en fazla 10
 sonuç korunur. Hızlı tarama en fazla 10, derin tarama en fazla 20 sorguyla
 sınırlıdır.
 
+Bir kaynağın kapsamlı sorguları hiç ham sonuç döndürmezse arama, kalan toplam
+sorgu kotası içinde önce tarih kısıtını, ardından gerekirse konum kısıtını
+gevşetir. Bu işlem yalnızca sıfır sonuç veren kaynaklarda yapılır; sonuç üretmiş
+bir kaynak yeniden sorgulanmaz ve toplam 10/20 sorgu sınırı aşılmaz. Sonuç
+ekranındaki kaynak kartları her sağlayıcı için kullanılan sorgu, fallback,
+ham sonuç, normalize edilen sonuç ve profile uyan aday sayılarını ayrı gösterir.
+Bu nedenle arama motorunun hiçbir URL döndürmesi ile bulunan ilanların profil
+filtresinde elenmesi birbirinden ayırt edilebilir.
+
 Günlük otomatik çalışma profil önbelleğine uyar. Operatörün açık onay verdiği
-manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol kümesi ve tarama
-modu beş dakika içinde yeniden kota kullanamaz. Farklı bir arama kapsamı için
+manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol, konum, çalışma
+biçimi, kaynak, tarih ve tarama modu kapsamı beş dakika içinde yeniden kota
+kullanamaz. Farklı bir arama kapsamı için
 de ardışık manuel istekler arasında en az 30 saniye bulunur ve aynı profil için
 yalnızca bir çalışma eşzamanlı yürütülür. Harici arama kotası kullanılmadan
 önce açık onay istenir. Aramada
@@ -63,8 +78,10 @@ sırasında kapanırsa yarım kalan
 kayıt bir sonraki başlatma denemesinde 30 dakika sonra güvenli biçimde
 `worker_interrupted` olarak sonlandırılır.
 
-Son aramadaki profile uyan kayıtlar ayrıca **Eşleşmeleri gör** penceresinde
-salt-okunur olarak gösterilir. Önceden reddedilmiş, kapalı, konum filtresinde
+Son aramadaki profile uyan kayıtlar **Genel ilan arama** sonuç alanında başlık,
+şirket, konum, kaynak, durum ve incelenme bilgisine göre filtrelenebilir. Ana
+sayfadaki **Eşleşmeleri gör** penceresi de aynı güvenli özetleri gösterir.
+Önceden reddedilmiş, kapalı, konum filtresinde
 elenmiş veya aktifliği kanıtlanamamış bir ilan bu ekranda nedeni ile görünür;
 ancak güvenli aktif ilan kuyruğuna eklenmez. Sonuç URL'leri API yanıtına
 alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dış

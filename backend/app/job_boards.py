@@ -46,6 +46,27 @@ PAGE_VERIFIED_ACTIVE_CODES = (
     "manual_linkedin_company_page_confirmation",
 )
 OFFICIAL_ATS_PROVIDERS = ("greenhouse", "lever", "ashby")
+PROFILE_JOB_SEARCH_SOURCES = (
+    "linkedin",
+    "kariyer",
+    "indeed",
+    "glassdoor",
+    "ats",
+)
+
+_PROFILE_JOB_SOURCE_MARKERS = {
+    "linkedin": ("site:linkedin.com/jobs/view",),
+    "kariyer": ("site:kariyer.net/is-ilani",),
+    "indeed": ("site:tr.indeed.com/viewjob",),
+    "glassdoor": ("site:glassdoor.com/job-listing",),
+    "ats": (
+        "site:job-boards.greenhouse.io",
+        "site:boards.greenhouse.io",
+        "site:jobs.lever.co",
+        "site:jobs.eu.lever.co",
+        "site:jobs.ashbyhq.com",
+    ),
+}
 SUPPORTED_JOB_PROVIDERS = (
     "linkedin",
     "kariyer",
@@ -934,6 +955,20 @@ def build_job_board_query(company_name: object) -> str:
     return query
 
 
+def identify_profile_job_query_source(query: object) -> str:
+    """Return the allowlisted source encoded in an internally built query."""
+
+    value = safe_text(query, 500)
+    matches = [
+        source
+        for source, markers in _PROFILE_JOB_SOURCE_MARKERS.items()
+        if any(marker in value for marker in markers)
+    ]
+    if len(matches) != 1:
+        raise ValueError("Profile job query source is invalid.")
+    return matches[0]
+
+
 def build_profile_job_queries(
     role_groups: tuple[tuple[str, ...], ...],
     *,
@@ -941,6 +976,7 @@ def build_profile_job_queries(
     preferred_remote_locations: tuple[str, ...] = (),
     remote_allowed: bool = True,
     published_after: date | None = None,
+    sources: tuple[str, ...] | None = None,
     max_queries: int = 6,
 ) -> tuple[str, ...]:
     """Build bounded, tier-aware queries without interpolating operators."""
@@ -987,24 +1023,24 @@ def build_profile_job_queries(
     location_clause = (
         f" ({' OR '.join(location_groups)})" if location_groups else ""
     )
-    source_groups = (
-        (
+    available_source_groups = {
+        "linkedin": (
             "site:linkedin.com/jobs/view",
             True,
         ),
-        (
+        "kariyer": (
             "site:kariyer.net/is-ilani",
             True,
         ),
-        (
+        "indeed": (
             "site:tr.indeed.com/viewjob",
             True,
         ),
-        (
+        "glassdoor": (
             "site:glassdoor.com/job-listing",
             True,
         ),
-        (
+        "ats": (
             "(site:job-boards.greenhouse.io OR "
             "site:boards.greenhouse.io OR "
             "site:jobs.lever.co OR "
@@ -1012,6 +1048,17 @@ def build_profile_job_queries(
             "site:jobs.ashbyhq.com)",
             False,
         ),
+    }
+    requested_sources = sources or PROFILE_JOB_SEARCH_SOURCES
+    if (
+        not 1 <= len(requested_sources) <= len(PROFILE_JOB_SEARCH_SOURCES)
+        or len(set(requested_sources)) != len(requested_sources)
+        or any(source not in available_source_groups for source in requested_sources)
+    ):
+        raise ValueError("Profile job sources are invalid.")
+    source_groups = tuple(
+        available_source_groups[source]
+        for source in requested_sources
     )
     date_clause = (
         f" after:{published_after.isoformat()}" if published_after else ""

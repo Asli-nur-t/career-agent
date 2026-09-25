@@ -24,6 +24,7 @@ from app.job_boards import (
     JobBoardListing,
     JobBoardSearchConnector,
     build_profile_job_queries,
+    identify_profile_job_query_source,
 )
 from app.matching import CandidateProfileSpec, JobMatchInput, score_job
 from app.models import CandidateProfile, JobBoardCandidate
@@ -61,6 +62,8 @@ class ProfileDiscovery:
 class ProfileQueryStats:
     query: str
     source_group: str
+    source: str
+    query_variant: str
     raw_result_count: int
     filtered_result_count: int
     provider_counts: dict[str, int]
@@ -211,14 +214,24 @@ def discover_profile_candidates(
     minimum_score: int,
     delay_seconds: float = 0,
     search_role_groups: tuple[tuple[str, ...], ...] | None = None,
+    search_sources: tuple[str, ...] | None = None,
 ) -> ProfileDiscovery:
-    queries = build_profile_job_queries(
-        search_role_groups
-        or (
-            tuple(profile.target_roles),
-            tuple(profile.secondary_roles),
-            tuple(profile.tertiary_roles),
+    role_groups = search_role_groups or (
+        tuple(profile.target_roles),
+        tuple(profile.secondary_roles),
+        tuple(profile.tertiary_roles),
+    )
+    query_options = {
+        "preferred_locations": tuple(profile.preferred_locations),
+        "preferred_remote_locations": tuple(
+            profile.preferred_remote_locations
         ),
+        "remote_allowed": profile.remote_allowed,
+        "sources": search_sources,
+        "max_queries": max_queries,
+    }
+    primary_queries = build_profile_job_queries(
+        role_groups,
         preferred_locations=tuple(profile.preferred_locations),
         preferred_remote_locations=tuple(
             profile.preferred_remote_locations
@@ -228,6 +241,20 @@ def discover_profile_candidates(
             datetime.now(timezone.utc).date()
             - timedelta(days=profile.max_listing_age_days)
         ),
+        sources=search_sources,
+        max_queries=max_queries,
+    )
+    date_relaxed_queries = build_profile_job_queries(
+        role_groups,
+        **query_options,
+    )
+    broad_queries = build_profile_job_queries(
+        role_groups,
+        preferred_locations=(),
+        preferred_remote_locations=(),
+        remote_allowed=False,
+        published_after=None,
+        sources=search_sources,
         max_queries=max_queries,
     )
     candidates: dict[tuple[str, str], ProfileJobCandidate] = {}
@@ -235,9 +262,18 @@ def discover_profile_candidates(
     filtered_count = 0
     query_stats: list[ProfileQueryStats] = []
     exclusion_counts: Counter[str] = Counter()
-    for position, query in enumerate(queries):
+    source_raw_counts: Counter[str] = Counter()
+    executed_queries: set[str] = set()
+
+    def execute_query(query: str, query_variant: str) -> None:
+        nonlocal raw_count, filtered_count
+        if delay_seconds and executed_queries:
+            time.sleep(delay_seconds)
+        source = identify_profile_job_query_source(query)
         discovery = connector.search_query(query, max_results=max_results)
+        executed_queries.add(query)
         raw_count += discovery.raw_result_count
+        source_raw_counts[source] += discovery.raw_result_count
         filtered_count += discovery.filtered_result_count
         query_exclusions: Counter[str] = Counter()
         accepted_count = 0
@@ -306,17 +342,10 @@ def discover_profile_candidates(
             ProfileQueryStats(
                 query=query,
                 source_group=(
-                    "official_ats"
-                    if any(
-                        marker in query
-                        for marker in (
-                            "jobs.lever.co",
-                            "job-boards.greenhouse.io",
-                            "jobs.ashbyhq.com",
-                        )
-                    )
-                    else "job_boards"
+                    "official_ats" if source == "ats" else "job_boards"
                 ),
+                source=source,
+                query_variant=query_variant,
                 raw_result_count=discovery.raw_result_count,
                 filtered_result_count=discovery.filtered_result_count,
                 provider_counts=dict(
@@ -347,10 +376,56 @@ def discover_profile_candidates(
                 exclusion_counts=dict(sorted(query_exclusions.items())),
             )
         )
-        if delay_seconds and position + 1 < len(queries):
-            time.sleep(delay_seconds)
+
+    for query in primary_queries:
+        execute_query(query, "scoped")
+
+    source_order = tuple(dict.fromkeys(
+        identify_profile_job_query_source(query)
+        for query in primary_queries
+    ))
+    first_fallbacks: list[tuple[str, str]] = []
+    for source in source_order:
+        candidate = next(
+            (
+                query
+                for query in date_relaxed_queries
+                if query not in executed_queries
+                and identify_profile_job_query_source(query) == source
+            ),
+            None,
+        )
+        variant = "date_relaxed"
+        if candidate is None:
+            candidate = next(
+                (
+                    query
+                    for query in broad_queries
+                    if query not in executed_queries
+                    and identify_profile_job_query_source(query) == source
+                ),
+                None,
+            )
+            variant = "broad"
+        if candidate is not None:
+            first_fallbacks.append((variant, candidate))
+    fallback_stages = (
+        tuple(first_fallbacks),
+        tuple(("date_relaxed", query) for query in date_relaxed_queries),
+        tuple(("broad", query) for query in broad_queries),
+    )
+    for fallback_queries in fallback_stages:
+        if len(executed_queries) >= max_queries:
+            break
+        for variant, query in fallback_queries:
+            if len(executed_queries) >= max_queries:
+                break
+            source = identify_profile_job_query_source(query)
+            if query in executed_queries or source_raw_counts[source] > 0:
+                continue
+            execute_query(query, variant)
     return ProfileDiscovery(
-        queries=queries,
+        queries=tuple(item.query for item in query_stats),
         raw_result_count=raw_count,
         filtered_result_count=filtered_count,
         candidates=tuple(candidates.values()),

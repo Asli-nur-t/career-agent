@@ -311,6 +311,22 @@ class StartSearchRequest(BaseModel):
     profile: str = Field(min_length=1, max_length=100)
     roles: list[str] = Field(min_length=1, max_length=10)
     search_mode: Literal["quick", "deep"] = "quick"
+    locations: list[str] = Field(default_factory=list, max_length=3)
+    work_modes: list[Literal["remote", "hybrid", "onsite"]] = Field(
+        default_factory=lambda: ["remote", "hybrid", "onsite"],
+        min_length=1,
+        max_length=3,
+    )
+    sources: list[
+        Literal["linkedin", "kariyer", "indeed", "glassdoor", "ats"]
+    ] = Field(
+        default_factory=lambda: [
+            "linkedin", "kariyer", "indeed", "glassdoor", "ats"
+        ],
+        min_length=1,
+        max_length=5,
+    )
+    max_age_days: int = Field(default=30, ge=1, le=90)
     confirmed_external_search: Literal[True]
     force: bool = False
 
@@ -936,6 +952,11 @@ def _search_run_response(
         "activity_counts",
         "requested_roles",
         "search_mode",
+        "requested_locations",
+        "requested_work_modes",
+        "requested_sources",
+        "source_diagnostics",
+        "max_listing_age_days",
         "query_limit",
         "result_limit_per_query",
     }
@@ -949,6 +970,83 @@ def _search_run_response(
         ]
     if result.get("search_mode") not in {"quick", "deep"}:
         result.pop("search_mode", None)
+    for key, allowed, maximum in (
+        ("requested_work_modes", {"remote", "hybrid", "onsite"}, 3),
+        (
+            "requested_sources",
+            {"linkedin", "kariyer", "indeed", "glassdoor", "ats"},
+            5,
+        ),
+    ):
+        values = result.get(key)
+        if isinstance(values, list):
+            result[key] = [
+                value for value in values[:maximum]
+                if isinstance(value, str) and value in allowed
+            ]
+        else:
+            result.pop(key, None)
+    raw_locations = result.get("requested_locations")
+    if isinstance(raw_locations, list):
+        result["requested_locations"] = [
+            location for value in raw_locations[:3]
+            if (location := safe_text(value, 100))
+        ]
+    else:
+        result.pop("requested_locations", None)
+    source_diagnostics: list[dict[str, object]] = []
+    raw_diagnostics = raw.get("source_diagnostics")
+    if isinstance(raw_diagnostics, list):
+        allowed_sources = {"linkedin", "kariyer", "indeed", "glassdoor", "ats"}
+        allowed_outcomes = {"matched", "filtered", "no_results"}
+        for item in raw_diagnostics[:5]:
+            if not isinstance(item, dict):
+                continue
+            source = safe_text(item.get("source"), 20)
+            outcome = safe_text(item.get("outcome"), 20)
+            if source not in allowed_sources or outcome not in allowed_outcomes:
+                continue
+            cleaned: dict[str, object] = {
+                "source": source,
+                "outcome": outcome,
+            }
+            for key in (
+                "query_count",
+                "fallback_query_count",
+                "raw_result_count",
+                "normalized_result_count",
+                "accepted_count",
+            ):
+                try:
+                    cleaned[key] = max(0, min(int(item.get(key, 0)), 1000))
+                except (TypeError, ValueError):
+                    cleaned[key] = 0
+            exclusions: dict[str, int] = {}
+            raw_exclusions = item.get("exclusion_counts")
+            if isinstance(raw_exclusions, dict):
+                for reason, count in list(raw_exclusions.items())[:10]:
+                    cleaned_reason = safe_text(reason, 80)
+                    if not cleaned_reason:
+                        continue
+                    try:
+                        exclusions[cleaned_reason] = max(
+                            0, min(int(count), 1000)
+                        )
+                    except (TypeError, ValueError):
+                        continue
+            cleaned["exclusion_counts"] = exclusions
+            source_diagnostics.append(cleaned)
+    if isinstance(raw_diagnostics, list):
+        result["source_diagnostics"] = source_diagnostics
+    else:
+        result.pop("source_diagnostics", None)
+    if "max_listing_age_days" in result:
+        try:
+            result["max_listing_age_days"] = max(
+                1, min(int(result["max_listing_age_days"]), 90)
+            )
+        except (TypeError, ValueError):
+            result.pop("max_listing_age_days", None)
     for key, maximum in (
         ("query_limit", 20),
         ("result_limit_per_query", 10),
@@ -1308,6 +1406,10 @@ def operator_start_search(
             profile_label=request.profile,
             requested_roles=request.roles,
             search_mode=request.search_mode,
+            requested_locations=request.locations,
+            requested_work_modes=request.work_modes,
+            requested_sources=request.sources,
+            max_listing_age_days=request.max_age_days,
             force=request.force,
         )
         run = load_latest_profile_search(engine, profile_label=request.profile)

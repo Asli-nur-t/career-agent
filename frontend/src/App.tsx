@@ -13,6 +13,8 @@ import {
   SearchMode,
   SearchRun,
   SearchRunCandidate,
+  SearchSource,
+  SearchWorkMode,
   Summary,
   approveCompany,
   approveJob,
@@ -34,7 +36,7 @@ import {
   startProfileSearch,
 } from "./api";
 
-type View = "overview" | "jobs" | "companies";
+type View = "overview" | "search" | "jobs" | "companies";
 
 const labels: Record<string, string> = {
   strong_apply: "Güçlü başvuru",
@@ -64,6 +66,7 @@ const labels: Record<string, string> = {
   location_or_policy: "Konum veya profil politikasına uymuyor",
   location_unknown: "Konumu doğrulanamadı",
   profile_filtered: "Profil filtresinde elendi",
+  role_or_score: "Rol veya puan eşiğinde elendi",
   previously_rejected: "Daha önce reddedildi",
   all: "Tüm durumlar",
   unprofiled: "Profil oluşturulmadı",
@@ -79,6 +82,11 @@ const labels: Record<string, string> = {
   insufficient_evidence: "Kanıt yetersiz",
   success: "Başarılı",
   error: "Hata",
+  linkedin: "LinkedIn",
+  kariyer: "Kariyer.net",
+  indeed: "Indeed",
+  glassdoor: "Glassdoor",
+  ats: "Resmî ATS",
 };
 
 function label(value: string): string {
@@ -104,9 +112,10 @@ function todayLabel(): string {
   }).format(new Date()).toLocaleUpperCase("tr-TR");
 }
 
-function profileSearchBudget(roleCount: number, mode: SearchMode) {
+function profileSearchBudget(roleCount: number, mode: SearchMode, sourceCount: number) {
   const groups = mode === "quick" ? 1 : Math.ceil(roleCount / 3);
-  const queryLimit = Math.min(mode === "quick" ? 10 : 20, groups * 5);
+  const primaryQueries = groups * sourceCount;
+  const queryLimit = Math.min(mode === "quick" ? 10 : 20, primaryQueries * 3);
   return { queryLimit, resultLimit: queryLimit * 10 };
 }
 
@@ -253,6 +262,250 @@ function SearchResultsModal({ candidates, onClose, onViewed }: {
             </article>
           ))}
         </div>
+      </section>
+    </div>
+  );
+}
+
+const generalSearchSources: SearchSource[] = [
+  "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+];
+const generalSearchWorkModes: SearchWorkMode[] = [
+  "remote", "hybrid", "onsite",
+];
+
+function GeneralSearchView({
+  selectedProfile,
+  roles,
+  availableRoles,
+  customRole,
+  onCustomRoleChange,
+  onAddRole,
+  onToggleRole,
+  mode,
+  onModeChange,
+  locations,
+  locationValue,
+  onLocationValueChange,
+  onAddLocation,
+  onRemoveLocation,
+  workModes,
+  onToggleWorkMode,
+  sources,
+  onToggleSource,
+  maxAgeDays,
+  onMaxAgeDaysChange,
+  run,
+  running,
+  starting,
+  budget,
+  onStart,
+  onViewed,
+}: {
+  selectedProfile: Profile | null;
+  roles: string[];
+  availableRoles: string[];
+  customRole: string;
+  onCustomRoleChange: (value: string) => void;
+  onAddRole: (event: FormEvent) => void;
+  onToggleRole: (role: string) => void;
+  mode: SearchMode;
+  onModeChange: (mode: SearchMode) => void;
+  locations: string[];
+  locationValue: string;
+  onLocationValueChange: (value: string) => void;
+  onAddLocation: (event: FormEvent) => void;
+  onRemoveLocation: (location: string) => void;
+  workModes: SearchWorkMode[];
+  onToggleWorkMode: (mode: SearchWorkMode) => void;
+  sources: SearchSource[];
+  onToggleSource: (source: SearchSource) => void;
+  maxAgeDays: number;
+  onMaxAgeDaysChange: (value: number) => void;
+  run: SearchRun | null;
+  running: boolean;
+  starting: boolean;
+  budget: { queryLimit: number; resultLimit: number };
+  onStart: () => void;
+  onViewed: (candidateId: string) => void;
+}) {
+  const [resultQuery, setResultQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all");
+  const [dispositionFilter, setDispositionFilter] = useState("all");
+  const [viewFilter, setViewFilter] = useState("all");
+  const candidates = run?.result.matched_candidates ?? [];
+  const sourceDiagnostics = run?.result.source_diagnostics ?? [];
+  const providers = useMemo(
+    () => Array.from(new Set(candidates.map((item) => item.provider))).sort(),
+    [candidates],
+  );
+  const dispositions = useMemo(
+    () => Array.from(new Set(candidates.map((item) => item.disposition))).sort(),
+    [candidates],
+  );
+  const filteredCandidates = useMemo(() => {
+    const query = resultQuery.trim().toLocaleLowerCase("tr-TR");
+    return candidates.filter((candidate) => {
+      if (providerFilter !== "all" && candidate.provider !== providerFilter) return false;
+      if (dispositionFilter !== "all" && candidate.disposition !== dispositionFilter) return false;
+      if (viewFilter === "new" && candidate.operator_viewed_at) return false;
+      if (viewFilter === "viewed" && !candidate.operator_viewed_at) return false;
+      if (!query) return true;
+      return [candidate.title, candidate.company_name, candidate.location ?? ""]
+        .some((value) => value.toLocaleLowerCase("tr-TR").includes(query));
+    });
+  }, [candidates, dispositionFilter, providerFilter, resultQuery, viewFilter]);
+
+  return (
+    <div className="general-search-page">
+      <section className="panel search-builder-panel">
+        <div className="panel-head search-page-head">
+          <div>
+            <p className="eyebrow">ŞİRKET LİSTESİNDEN BAĞIMSIZ</p>
+            <h2>Genel iş piyasasını tara</h2>
+            <p>Seçilen roller doğrudan genel iş sitelerinde ve resmî ATS kaynaklarında aranır.</p>
+          </div>
+          <div className={`search-run-badge ${run?.status ?? "idle"}`}>
+            {run ? label(run.status) : "Hazır"}
+          </div>
+        </div>
+
+        <div className="search-builder-grid">
+          <section className="search-control-block role-control-block">
+            <div className="control-title"><strong>1. Roller</strong><span>{roles.length}/10</span></div>
+            <p>{selectedProfile?.label ?? "Seçili profil"} rolleri başlangıçta seçilir; istediğini kaldırabilir veya yeni rol ekleyebilirsin.</p>
+            <div className="role-cloud selectable">
+              {availableRoles.map((role) => {
+                const selected = roles.includes(role);
+                const custom = !(selectedProfile?.target_roles ?? []).includes(role);
+                return (
+                  <button type="button" className={selected ? "selected" : ""} key={role} onClick={() => onToggleRole(role)}>
+                    {role}{custom && selected ? " ×" : ""}
+                  </button>
+                );
+              })}
+            </div>
+            <form className="role-add" onSubmit={onAddRole}>
+              <input value={customRole} maxLength={100} onChange={(event) => onCustomRoleChange(event.target.value)} placeholder="Örn. Platform Engineer" />
+              <button className="ghost" type="submit" disabled={!customRole.trim() || roles.length >= 10}>Ekle</button>
+            </form>
+          </section>
+
+          <section className="search-control-block">
+            <div className="control-title"><strong>2. Konum ve çalışma</strong><span>En fazla 3 konum</span></div>
+            <p>Konum girmezsen profilindeki konum tercihleri kullanılır.</p>
+            <div className="location-cloud">
+              {locations.map((location) => <button type="button" key={location} onClick={() => onRemoveLocation(location)}>{location} ×</button>)}
+            </div>
+            <form className="role-add" onSubmit={onAddLocation}>
+              <input value={locationValue} maxLength={100} onChange={(event) => onLocationValueChange(event.target.value)} placeholder="Örn. İstanbul veya Türkiye" />
+              <button className="ghost" type="submit" disabled={!locationValue.trim() || locations.length >= 3}>Ekle</button>
+            </form>
+            <div className="choice-row">
+              {generalSearchWorkModes.map((workMode) => (
+                <button type="button" className={workModes.includes(workMode) ? "selected" : ""} key={workMode} onClick={() => onToggleWorkMode(workMode)}>{label(workMode)}</button>
+              ))}
+            </div>
+          </section>
+
+          <section className="search-control-block">
+            <div className="control-title"><strong>3. Kaynaklar</strong><span>{sources.length}/5</span></div>
+            <p>Her kaynak ayrı sorgulanır; böylece tek bir platform sonuçları bastırmaz.</p>
+            <div className="choice-row source-choices">
+              {generalSearchSources.map((source) => (
+                <button type="button" className={sources.includes(source) ? "selected" : ""} key={source} onClick={() => onToggleSource(source)}>{label(source)}</button>
+              ))}
+            </div>
+          </section>
+
+          <section className="search-control-block">
+            <div className="control-title"><strong>4. Tarama kapsamı</strong><span>Kontrollü kota</span></div>
+            <div className="search-mode-picker">
+              <button type="button" className={mode === "quick" ? "selected" : ""} onClick={() => onModeChange("quick")}><b>Hızlı</b><span>Tüm roller birlikte</span></button>
+              <button type="button" className={mode === "deep" ? "selected" : ""} onClick={() => onModeChange("deep")}><b>Derin</b><span>Üçlü rol grupları</span></button>
+            </div>
+            <label className="age-field">İlan yaşı
+              <select value={maxAgeDays} onChange={(event) => onMaxAgeDaysChange(Number(event.target.value))}>
+                <option value={7}>Son 7 gün</option>
+                <option value={14}>Son 14 gün</option>
+                <option value={30}>Son 30 gün</option>
+                <option value={60}>Son 60 gün</option>
+                <option value={90}>Son 90 gün</option>
+              </select>
+            </label>
+          </section>
+        </div>
+
+        <div className="search-launch-row">
+          <div><strong>En fazla {budget.queryLimit} sorgu / {budget.resultLimit} ham sonuç</strong><span>Aynı kapsam için 5 dakika, farklı kapsam için 30 saniye güvenli bekleme uygulanır.</span></div>
+          <button className="primary" onClick={onStart} disabled={running || starting || roles.length === 0 || sources.length === 0 || workModes.length === 0}>
+            {running ? "Arama sürüyor…" : starting ? "Başlatılıyor…" : "Genel ilan aramasını başlat"}
+          </button>
+        </div>
+        {running && <div className="search-progress"><i /></div>}
+      </section>
+
+      <section className="panel general-results-panel">
+        <div className="general-results-summary">
+          <div><p className="eyebrow">SON ARAMA</p><h2>Arama sonuçları</h2></div>
+          <div className="result-stat-strip">
+            <span><b>{run?.result.raw_result_count ?? 0}</b> tarandı</span>
+            <span><b>{run?.result.matched_candidate_count ?? 0}</b> role uydu</span>
+            <span><b>{run?.result.activity_counts?.active ?? 0}</b> aktif</span>
+            <span><b>{run?.result.activity_counts?.unknown ?? 0}</b> belirsiz</span>
+          </div>
+        </div>
+
+        {sourceDiagnostics.length > 0 && (
+          <div className="source-diagnostics" aria-label="Kaynak tarama durumu">
+            {sourceDiagnostics.map((item) => (
+              <article className={`source-diagnostic ${item.outcome}`} key={item.source}>
+                <div><strong>{label(item.source)}</strong><span>{label(item.outcome)}</span></div>
+                <dl>
+                  <div><dt>Sorgu</dt><dd>{item.query_count}</dd></div>
+                  <div><dt>Ham</dt><dd>{item.raw_result_count}</dd></div>
+                  <div><dt>Okunabilen</dt><dd>{item.normalized_result_count}</dd></div>
+                  <div><dt>Uyan</dt><dd>{item.accepted_count}</dd></div>
+                </dl>
+                {item.fallback_query_count > 0 && <small>{item.fallback_query_count} gevşetilmiş sorgu denendi</small>}
+              </article>
+            ))}
+          </div>
+        )}
+
+        {Object.keys(run?.result.exclusion_counts ?? {}).length > 0 && (
+          <div className="exclusion-breakdown">
+            <strong>Eleme nedenleri</strong>
+            {Object.entries(run?.result.exclusion_counts ?? {}).map(([reason, count]) => (
+              <span key={reason}><b>{count}</b> {label(reason)}</span>
+            ))}
+          </div>
+        )}
+
+        <div className="result-filters">
+          <input value={resultQuery} maxLength={100} onChange={(event) => setResultQuery(event.target.value)} placeholder="Başlık, şirket veya konum ara" />
+          <select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">Tüm kaynaklar</option>{providers.map((provider) => <option key={provider} value={provider}>{label(provider)}</option>)}</select>
+          <select value={dispositionFilter} onChange={(event) => setDispositionFilter(event.target.value)}><option value="all">Tüm sonuç durumları</option>{dispositions.map((value) => <option key={value} value={value}>{label(value)}</option>)}</select>
+          <select value={viewFilter} onChange={(event) => setViewFilter(event.target.value)}><option value="all">Yeni + incelenen</option><option value="new">Yalnızca yeni</option><option value="viewed">Yalnızca incelenen</option></select>
+        </div>
+
+        {run?.status === "failed" ? (
+          <div className="empty-state compact"><div>!</div><h3>Arama tamamlanamadı</h3><p>{errorMessage(new ApiError(500, run.error_code ?? "search_failed"))}</p></div>
+        ) : candidates.length === 0 ? (
+          <div className="empty-state compact"><div>⌕</div><h3>{run ? "Uygun ilan bulunamadı" : "Henüz arama yapılmadı"}</h3><p>{run ? ((run.result.raw_result_count ?? 0) === 0 ? "Seçilen kaynaklar ilk sorgularda ve kontrollü gevşetmelerde hiç ham ilan döndürmedi. Kaynak kartları hangi sitenin yanıt vermediğini gösteriyor." : `${run.result.raw_result_count ?? 0} ham sonuç rol, konum veya profil süzgecinde elendi; kaynak kartlarından ayrıntıyı görebilirsin.`) : "Rol ve kaynakları seçip ilk bağımsız genel taramayı başlatabilirsin."}</p></div>
+        ) : filteredCandidates.length === 0 ? (
+          <div className="empty-state compact"><div>○</div><h3>Filtreye uyan sonuç yok</h3><p>Sonuç filtrelerinden birini gevşetebilirsin.</p></div>
+        ) : (
+          <div className="general-result-list">
+            {filteredCandidates.map((candidate) => (
+              <article className={`general-result-card ${candidate.operator_viewed_at ? "viewed" : "unviewed"}`} key={candidate.candidate_id}>
+                <span className={`score score-${candidate.recommendation}`}>{candidate.score}</span>
+                <div className="general-result-main"><strong>{candidate.title}</strong><span>{candidate.company_name}</span><small>{candidate.location ?? "Konum bilinmiyor"} · {label(candidate.provider)}</small></div>
+                <div className="general-result-actions"><span className={`view-state ${candidate.operator_viewed_at ? "viewed" : "new"}`}>{candidate.operator_viewed_at ? "İncelendi" : "Yeni"}</span><b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b><a href={candidate.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(candidate.candidate_id)}>İlanı aç ↗</a></div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -908,6 +1161,15 @@ export default function App() {
   const [searchRoles, setSearchRoles] = useState<string[]>([]);
   const [searchMode, setSearchMode] = useState<SearchMode>("quick");
   const [customRole, setCustomRole] = useState("");
+  const [searchLocations, setSearchLocations] = useState<string[]>([]);
+  const [locationValue, setLocationValue] = useState("");
+  const [searchWorkModes, setSearchWorkModes] = useState<SearchWorkMode[]>([
+    "remote", "hybrid", "onsite",
+  ]);
+  const [searchSources, setSearchSources] = useState<SearchSource[]>([
+    "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+  ]);
+  const [maxAgeDays, setMaxAgeDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -927,7 +1189,11 @@ export default function App() {
       ),
     ];
   }, [selectedProfile, searchRoles]);
-  const searchBudget = profileSearchBudget(searchRoles.length, searchMode);
+  const searchBudget = profileSearchBudget(
+    searchRoles.length,
+    searchMode,
+    searchSources.length,
+  );
 
   const refreshBase = useCallback(async (activeToken: string) => {
     const [summaryData, profileData] = await Promise.all([
@@ -963,7 +1229,27 @@ export default function App() {
     if (!token || !profile) { setSearchRun(null); return; }
     let cancelled = false;
     getLatestProfileSearch(token, profile)
-      .then((run) => { if (!cancelled) { setSearchRun(run); setShowSearchResults(false); } })
+      .then((run) => {
+        if (cancelled) return;
+        setSearchRun(run);
+        setShowSearchResults(false);
+        if (run?.result.requested_roles?.length) {
+          setSearchRoles(run.result.requested_roles.slice(0, 10));
+        }
+        if (run?.result.requested_locations) {
+          setSearchLocations(run.result.requested_locations.slice(0, 3));
+        }
+        if (run?.result.requested_work_modes?.length) {
+          setSearchWorkModes(run.result.requested_work_modes);
+        }
+        if (run?.result.requested_sources?.length) {
+          setSearchSources(run.result.requested_sources);
+        }
+        if (run?.result.max_listing_age_days) {
+          setMaxAgeDays(run.result.max_listing_age_days);
+        }
+        if (run?.result.search_mode) setSearchMode(run.result.search_mode);
+      })
       .catch((caught) => { if (!cancelled) setError(errorMessage(caught)); });
     return () => { cancelled = true; };
   }, [token, profile]);
@@ -1050,11 +1336,20 @@ export default function App() {
       setError("Arama için 1–10 rol seçmelisin.");
       return;
     }
+    if (searchSources.length < 1 || searchWorkModes.length < 1) {
+      setError("En az bir kaynak ve çalışma biçimi seçmelisin.");
+      return;
+    }
     const modeLabel = searchMode === "quick" ? "Hızlı" : "Derin";
-    if (!window.confirm(`${modeLabel} taramada ${searchRoles.length} rol için en fazla ${searchBudget.queryLimit} sorgu ve ${searchBudget.resultLimit} ham sonuç taransın mı?`)) return;
+    if (!window.confirm(`${modeLabel} taramada ${searchRoles.length} rol ve ${searchSources.length} kaynak için en fazla ${searchBudget.queryLimit} sorgu ve ${searchBudget.resultLimit} ham sonuç taransın mı?`)) return;
     setSearchStarting(true); setError(null);
     try {
-      setSearchRun(await startProfileSearch(token, profile, searchRoles, searchMode));
+      setSearchRun(await startProfileSearch(token, profile, searchRoles, searchMode, {
+        locations: searchLocations,
+        workModes: searchWorkModes,
+        sources: searchSources,
+        maxAgeDays,
+      }));
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "search_already_running") {
         setSearchRun(await getLatestProfileSearch(token, profile));
@@ -1084,6 +1379,32 @@ export default function App() {
     setCustomRole("");
   }
 
+  function addSearchLocation(event: FormEvent) {
+    event.preventDefault();
+    const location = locationValue.trim().replace(/\s+/g, " ").slice(0, 100);
+    if (!location || searchLocations.length >= 3) return;
+    if (!searchLocations.some((item) => item.toLocaleLowerCase("tr-TR") === location.toLocaleLowerCase("tr-TR"))) {
+      setSearchLocations((current) => [...current, location]);
+    }
+    setLocationValue("");
+  }
+
+  function toggleSearchWorkMode(workMode: SearchWorkMode) {
+    setSearchWorkModes((current) => (
+      current.includes(workMode)
+        ? current.length > 1 ? current.filter((item) => item !== workMode) : current
+        : [...current, workMode]
+    ));
+  }
+
+  function toggleSearchSource(source: SearchSource) {
+    setSearchSources((current) => (
+      current.includes(source)
+        ? current.length > 1 ? current.filter((item) => item !== source) : current
+        : generalSearchSources.filter((item) => item === source || current.includes(item))
+    ));
+  }
+
   if (!token) return <AuthScreen onConnect={setToken} />;
 
   return (
@@ -1092,6 +1413,7 @@ export default function App() {
         <div className="brand"><div className="brand-mark small">CA</div><div><strong>Career Agent</strong><span>Operator Console</span></div></div>
         <nav>
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}><span>⌂</span>Genel bakış</button>
+          <button className={view === "search" ? "active" : ""} onClick={() => setView("search")}><span>⌕</span>Genel ilan arama<b>{matchedSearchCandidates.length}</b></button>
           <button className={view === "jobs" ? "active" : ""} onClick={() => setView("jobs")}><span>◎</span>İlan kuyruğu<b>{jobs.length}</b></button>
           <button className={view === "companies" ? "active" : ""} onClick={() => setView("companies")}><span>▦</span>Şirketler<b>{summary?.companies ?? 0}</b></button>
         </nav>
@@ -1099,7 +1421,7 @@ export default function App() {
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : view === "jobs" ? "İlan inceleme kuyruğu" : "Şirket yönetimi"}</h1></div>
+          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : view === "search" ? "Genel ilan arama" : view === "jobs" ? "İlan inceleme kuyruğu" : "Şirket yönetimi"}</h1></div>
           <div className="top-actions">
             {view !== "companies" && <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}>{profiles.map((item) => <option key={item.label}>{item.label}</option>)}</select></label>}
             <button className="ghost" onClick={() => setToken("")}>Kilitle</button>
@@ -1139,7 +1461,7 @@ export default function App() {
                     <button type="button" className={searchMode === "quick" ? "selected" : ""} onClick={() => setSearchMode("quick")}><b>Hızlı</b><span>Roller birlikte</span></button>
                     <button type="button" className={searchMode === "deep" ? "selected" : ""} onClick={() => setSearchMode("deep")}><b>Derin</b><span>Üçlü rol grupları</span></button>
                   </div>
-                  <small className="role-budget">LinkedIn, Kariyer.net, Indeed ve Glassdoor ayrı ayrı; ardından resmî ATS kaynakları taranır. En fazla {searchBudget.queryLimit} sorgu / {searchBudget.resultLimit} sonuç.</small>
+                  <small className="role-budget">Bağımsız genel aramada rol, konum, çalışma biçimi, tarih ve kaynakları ayrıntılı seçebilirsin.</small>
                 </div>
                 <dl><div><dt>Son arama</dt><dd>{selectedProfile?.last_search_outcome ? label(selectedProfile.last_search_outcome) : "Henüz yok"}</dd></div><div><dt>Sonraki kontrol</dt><dd>{formatDate(selectedProfile?.next_search_at ?? null)}</dd></div><div><dt>Aktif kaynak</dt><dd>{summary?.active_sources ?? 0}</dd></div></dl>
                 <div className={`search-run ${searchRun?.status ?? "idle"}`}>
@@ -1165,13 +1487,42 @@ export default function App() {
                     <button className="ghost full search-results-button" onClick={() => setShowSearchResults(true)}>Eşleşmeleri gör ({matchedSearchCandidates.length})</button>
                   )}
                   {searchRun?.status === "failed" && <p>{errorMessage(new ApiError(500, searchRun.error_code ?? "search_failed"))}</p>}
-                  <button className="primary full" onClick={startSearch} disabled={!profile || searchRunning || searchStarting || searchRoles.length === 0}>
-                    {searchRunning ? "Arama sürüyor…" : "Şimdi ilan ara"}
+                  <button className="primary full" onClick={() => setView("search")} disabled={!profile}>
+                    {searchRunning ? "Aramayı görüntüle" : "Genel aramaya geç"}
                   </button>
                 </div>
               </article>
             </section>
           </div>
+        ) : view === "search" ? (
+          <GeneralSearchView
+            selectedProfile={selectedProfile}
+            roles={searchRoles}
+            availableRoles={availableSearchRoles}
+            customRole={customRole}
+            onCustomRoleChange={setCustomRole}
+            onAddRole={addCustomRole}
+            onToggleRole={toggleSearchRole}
+            mode={searchMode}
+            onModeChange={setSearchMode}
+            locations={searchLocations}
+            locationValue={locationValue}
+            onLocationValueChange={setLocationValue}
+            onAddLocation={addSearchLocation}
+            onRemoveLocation={(location) => setSearchLocations((current) => current.filter((item) => item !== location))}
+            workModes={searchWorkModes}
+            onToggleWorkMode={toggleSearchWorkMode}
+            sources={searchSources}
+            onToggleSource={toggleSearchSource}
+            maxAgeDays={maxAgeDays}
+            onMaxAgeDaysChange={setMaxAgeDays}
+            run={searchRun}
+            running={searchRunning}
+            starting={searchStarting}
+            budget={searchBudget}
+            onStart={startSearch}
+            onViewed={(candidateId) => { void recordViewed(candidateId); }}
+          />
         ) : view === "jobs" ? (
           <div className="jobs-layout">
             <section className="queue-panel">

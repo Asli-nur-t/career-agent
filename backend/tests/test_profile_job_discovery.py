@@ -146,6 +146,118 @@ def test_profile_discovery_excludes_closed_and_unlocated_results() -> None:
     }
 
 
+def test_zero_result_query_retries_once_without_date_filter() -> None:
+    calls: list[str] = []
+    listing = JobBoardListing(
+        provider="linkedin",
+        external_id="fallback-123",
+        listing_url="https://www.linkedin.com/jobs/view/12345678",
+        title="AI Engineer - Acme - LinkedIn",
+        snippet="Python RAG",
+        search_position=1,
+        company_name_raw="Acme",
+        location="İstanbul, Türkiye",
+        work_mode="hybrid",
+    )
+
+    def search_query(query: str, max_results: int) -> JobBoardSearch:
+        calls.append(query)
+        results = () if " after:" in query else (listing,)
+        return JobBoardSearch(
+            query=query,
+            raw_result_count=len(results),
+            filtered_result_count=0,
+            listings=results,
+        )
+
+    result = discover_profile_candidates(
+        SimpleNamespace(search_query=search_query),
+        profile(),
+        max_queries=3,
+        max_results=10,
+        minimum_score=20,
+        search_role_groups=(("AI Engineer",),),
+        search_sources=("linkedin",),
+    )
+
+    assert len(calls) == 2
+    assert " after:" in calls[0]
+    assert " after:" not in calls[1]
+    assert result.raw_result_count == 1
+    assert result.query_stats[0].source == "linkedin"
+    assert result.query_stats[0].query_variant == "scoped"
+    assert result.query_stats[1].query_variant == "date_relaxed"
+    assert len(result.candidates) == 1
+
+
+def test_fallback_queries_never_exceed_total_query_budget() -> None:
+    calls: list[str] = []
+
+    def search_query(query: str, max_results: int) -> JobBoardSearch:
+        calls.append(query)
+        return JobBoardSearch(
+            query=query,
+            raw_result_count=0,
+            filtered_result_count=0,
+            listings=(),
+        )
+
+    result = discover_profile_candidates(
+        SimpleNamespace(search_query=search_query),
+        profile(),
+        max_queries=5,
+        max_results=10,
+        minimum_score=20,
+        search_role_groups=(("AI Engineer",),),
+        search_sources=("linkedin", "kariyer", "indeed"),
+    )
+
+    assert len(calls) == 5
+    assert len(result.queries) == 5
+    assert sum(
+        item.query_variant != "scoped" for item in result.query_stats
+    ) == 2
+
+
+def test_first_fallback_round_is_fair_across_all_sources() -> None:
+    connector = SimpleNamespace(
+        search_query=lambda query, max_results: JobBoardSearch(
+            query=query,
+            raw_result_count=0,
+            filtered_result_count=0,
+            listings=(),
+        )
+    )
+
+    result = discover_profile_candidates(
+        connector,
+        profile(),
+        max_queries=10,
+        max_results=10,
+        minimum_score=20,
+        search_role_groups=(("AI Engineer",),),
+        search_sources=(
+            "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+        ),
+    )
+
+    assert len(result.query_stats) == 10
+    assert {
+        source: sum(item.source == source for item in result.query_stats)
+        for source in ("linkedin", "kariyer", "indeed", "glassdoor", "ats")
+    } == {
+        "linkedin": 2,
+        "kariyer": 2,
+        "indeed": 2,
+        "glassdoor": 2,
+        "ats": 2,
+    }
+    assert any(
+        item.source == "ats" and item.query_variant == "broad"
+        for item in result.query_stats
+    )
+
+
 def test_tertiary_mobile_role_remains_review_priority() -> None:
     mobile = JobBoardListing(
         provider="linkedin",

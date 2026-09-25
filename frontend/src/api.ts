@@ -175,6 +175,26 @@ export type SearchRunCandidate = {
 };
 
 export type SearchMode = "quick" | "deep";
+export type SearchWorkMode = "remote" | "hybrid" | "onsite";
+export type SearchSource = "linkedin" | "kariyer" | "indeed" | "glassdoor" | "ats";
+
+export type SearchScope = {
+  locations: string[];
+  workModes: SearchWorkMode[];
+  sources: SearchSource[];
+  maxAgeDays: number;
+};
+
+export type SearchSourceDiagnostic = {
+  source: SearchSource;
+  outcome: "matched" | "filtered" | "no_results";
+  query_count: number;
+  fallback_query_count: number;
+  raw_result_count: number;
+  normalized_result_count: number;
+  accepted_count: number;
+  exclusion_counts: Record<string, number>;
+};
 
 export type SearchRun = {
   run_id: string;
@@ -200,6 +220,11 @@ export type SearchRun = {
     };
     matched_candidates?: SearchRunCandidate[];
     requested_roles?: string[];
+    requested_locations?: string[];
+    requested_work_modes?: SearchWorkMode[];
+    requested_sources?: SearchSource[];
+    source_diagnostics?: SearchSourceDiagnostic[];
+    max_listing_age_days?: number;
     search_mode?: SearchMode;
     query_limit?: number;
     result_limit_per_query?: number;
@@ -383,6 +408,7 @@ export function startProfileSearch(
   profile: string,
   roles: string[],
   searchMode: SearchMode,
+  scope: SearchScope,
 ): Promise<SearchRun> {
   return request(token, "/operator/search-runs", {
     method: "POST",
@@ -390,6 +416,10 @@ export function startProfileSearch(
       profile,
       roles,
       search_mode: searchMode,
+      locations: scope.locations,
+      work_modes: scope.workModes,
+      sources: scope.sources,
+      max_age_days: scope.maxAgeDays,
       confirmed_external_search: true,
       force: true,
     }),

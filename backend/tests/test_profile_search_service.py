@@ -6,6 +6,7 @@ import pytest
 
 from app.profile_search_service import (
     ProfileSearchError,
+    _source_diagnostics,
     load_search_candidate_snapshots,
     run_profile_job_search,
 )
@@ -35,6 +36,51 @@ def test_profile_search_fails_closed_without_serper_key(monkeypatch) -> None:
             )
 
     assert caught.value.code == "serper_not_configured"
+
+
+def test_source_diagnostics_distinguish_empty_and_filtered_sources() -> None:
+    stats = (
+        SimpleNamespace(
+            source="linkedin",
+            query_variant="scoped",
+            raw_result_count=0,
+            filtered_result_count=0,
+            accepted_count=0,
+            exclusion_counts={},
+        ),
+        SimpleNamespace(
+            source="linkedin",
+            query_variant="date_relaxed",
+            raw_result_count=0,
+            filtered_result_count=0,
+            accepted_count=0,
+            exclusion_counts={},
+        ),
+        SimpleNamespace(
+            source="indeed",
+            query_variant="scoped",
+            raw_result_count=3,
+            filtered_result_count=1,
+            accepted_count=0,
+            exclusion_counts={"location_or_policy": 2},
+        ),
+    )
+
+    result = _source_diagnostics(stats, ("linkedin", "indeed"))
+
+    assert result[0] == {
+        "source": "linkedin",
+        "query_count": 2,
+        "fallback_query_count": 1,
+        "raw_result_count": 0,
+        "normalized_result_count": 0,
+        "accepted_count": 0,
+        "exclusion_counts": {},
+        "outcome": "no_results",
+    }
+    assert result[1]["outcome"] == "filtered"
+    assert result[1]["normalized_result_count"] == 2
+    assert result[1]["exclusion_counts"] == {"location_or_policy": 2}
 
 
 def test_profile_search_audits_only_its_unverified_candidates(monkeypatch) -> None:
@@ -212,6 +258,10 @@ def test_profile_search_uses_requested_roles_without_mutating_profile(
             MagicMock(),
             profile_label="aslinur-default",
             requested_roles=["Platform Engineer", "Backend Engineer"],
+            requested_locations=["Türkiye"],
+            requested_work_modes=["remote", "hybrid"],
+            requested_sources=["linkedin", "ats"],
+            max_listing_age_days=14,
         )
 
     effective = discover.call_args.args[1]
@@ -219,9 +269,21 @@ def test_profile_search_uses_requested_roles_without_mutating_profile(
     assert discover.call_args.kwargs["search_role_groups"] == (
         ("Platform Engineer", "Backend Engineer"),
     )
+    assert discover.call_args.kwargs["search_sources"] == (
+        "linkedin", "ats"
+    )
+    assert effective.preferred_locations == ["Türkiye"]
+    assert effective.preferred_remote_locations == ["Türkiye"]
+    assert effective.allowed_work_modes == ["remote", "hybrid"]
+    assert effective.remote_allowed is True
+    assert effective.max_listing_age_days == 14
     assert original.target_roles == ["AI Engineer"]
     assert result["requested_roles"] == ["Platform Engineer", "Backend Engineer"]
     assert result["search_mode"] == "quick"
+    assert result["requested_locations"] == ["Türkiye"]
+    assert result["requested_work_modes"] == ["remote", "hybrid"]
+    assert result["requested_sources"] == ["linkedin", "ats"]
+    assert result["max_listing_age_days"] == 14
     assert result["query_limit"] == 10
 
 
