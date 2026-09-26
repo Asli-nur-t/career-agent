@@ -43,6 +43,8 @@ from app.models import (
     Company,
     CompanyAffiliation,
     CompanyWebProfile,
+    JobApplication,
+    JobApplicationEvent,
     JobBoardCandidate,
     JobMatch,
     JobPosting,
@@ -87,6 +89,24 @@ COMPANY_PROFILE_STATUSES = {
     "needs_review",
     "not_found",
 }
+
+APPLICATION_TRANSITIONS = {
+    "to_apply": {"applied", "withdrawn"},
+    "applied": {"interview", "rejected", "offer", "withdrawn"},
+    "interview": {"rejected", "offer", "withdrawn"},
+    "rejected": {"to_apply"},
+    "offer": {"withdrawn"},
+    "withdrawn": {"to_apply"},
+}
+
+ApplicationStatus = Literal[
+    "to_apply",
+    "applied",
+    "interview",
+    "rejected",
+    "offer",
+    "withdrawn",
+]
 
 
 class OperatorSummary(BaseModel):
@@ -369,6 +389,40 @@ class NativeSearchLinksResponse(BaseModel):
 class JobViewedResponse(BaseModel):
     candidate_id: UUID
     operator_viewed_at: datetime
+
+
+class UpdateJobApplicationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+    status: ApplicationStatus
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class JobApplicationItem(BaseModel):
+    application_id: UUID
+    candidate_id: UUID
+    profile: str
+    status: ApplicationStatus
+    notes: str | None
+    applied_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    provider: str
+    title: str
+    company_name: str
+    listing_url: str
+    location: str | None
+    work_mode: str
+    activity_state: str
+
+
+class JobApplicationPage(BaseModel):
+    profile: str
+    total: int
+    limit: int
+    offset: int
+    items: list[JobApplicationItem]
 
 
 class SearchRunResponse(BaseModel):
@@ -874,6 +928,185 @@ def mark_operator_job_viewed(
         )
 
 
+def _job_application_item(
+    application: JobApplication,
+    candidate: JobBoardCandidate,
+    profile_label: str,
+    company_name: str | None,
+) -> JobApplicationItem:
+    listing_url = _validated_listing_url(
+        provider=candidate.provider,
+        title=candidate.title,
+        listing_url=candidate.listing_url,
+    )
+    return JobApplicationItem(
+        application_id=application.id,
+        candidate_id=candidate.id,
+        profile=profile_label,
+        status=application.status,
+        notes=(safe_text(application.notes, 2000) if application.notes else None),
+        applied_at=application.applied_at,
+        created_at=application.created_at,
+        updated_at=application.updated_at,
+        provider=candidate.provider,
+        title=safe_text(candidate.title, 500),
+        company_name=safe_text(company_name, 500) or UNKNOWN_EMPLOYER,
+        listing_url=listing_url,
+        location=(safe_text(candidate.location, 500) if candidate.location else None),
+        work_mode=candidate.work_mode,
+        activity_state=candidate.activity_state,
+    )
+
+
+def load_job_applications(
+    database: Engine,
+    *,
+    profile_label: str,
+    application_status: str | None,
+    limit: int,
+    offset: int,
+) -> JobApplicationPage:
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
+
+        filters = [JobApplication.profile_id == profile.id]
+        if application_status is not None:
+            filters.append(JobApplication.status == application_status)
+        total = int(
+            session.scalar(
+                select(func.count()).select_from(JobApplication).where(*filters)
+            )
+            or 0
+        )
+        rows = session.execute(
+            select(
+                JobApplication,
+                JobBoardCandidate,
+                func.coalesce(Company.name, JobBoardCandidate.company_name_raw),
+            )
+            .join(
+                JobBoardCandidate,
+                JobBoardCandidate.id == JobApplication.candidate_id,
+            )
+            .outerjoin(Company, Company.id == JobBoardCandidate.company_id)
+            .where(*filters)
+            .order_by(JobApplication.updated_at.desc(), JobApplication.id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+
+        items = [
+            _job_application_item(application, candidate, profile.label, company_name)
+            for application, candidate, company_name in rows
+        ]
+    return JobApplicationPage(
+        profile=profile_label,
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
+
+
+def update_job_application(
+    database: Engine,
+    *,
+    candidate_id: UUID,
+    profile_label: str,
+    new_status: str,
+    notes: str | None,
+    notes_supplied: bool,
+) -> JobApplicationItem:
+    now = datetime.now(timezone.utc)
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile)
+            .where(CandidateProfile.label == profile_label)
+            .with_for_update()
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
+        row = session.execute(
+            select(
+                JobBoardCandidate,
+                func.coalesce(Company.name, JobBoardCandidate.company_name_raw),
+            )
+            .outerjoin(Company, Company.id == JobBoardCandidate.company_id)
+            .where(JobBoardCandidate.id == candidate_id)
+            .with_for_update(of=JobBoardCandidate)
+        ).one_or_none()
+        if row is None:
+            raise ValueError("candidate_not_found")
+        candidate, company_name = row
+        _validated_listing_url(
+            provider=candidate.provider,
+            title=candidate.title,
+            listing_url=candidate.listing_url,
+        )
+
+        application = session.scalar(
+            select(JobApplication)
+            .where(
+                JobApplication.candidate_id == candidate_id,
+                JobApplication.profile_id == profile.id,
+            )
+            .with_for_update()
+        )
+        previous_status: str | None = None
+        if application is None:
+            if new_status not in {"to_apply", "applied"}:
+                raise ValueError("application_initial_status_invalid")
+            application = JobApplication(
+                candidate_id=candidate_id,
+                profile_id=profile.id,
+                status=new_status,
+                notes=notes if notes_supplied else None,
+                applied_at=(now if new_status == "applied" else None),
+                updated_at=now,
+            )
+            session.add(application)
+            session.flush()
+        else:
+            previous_status = application.status
+            if new_status != previous_status and new_status not in APPLICATION_TRANSITIONS[
+                previous_status
+            ]:
+                raise ValueError("application_transition_invalid")
+            if notes_supplied:
+                application.notes = notes
+            if new_status != previous_status:
+                application.status = new_status
+                application.updated_at = now
+                if application.applied_at is None and new_status in {
+                    "applied",
+                    "interview",
+                    "rejected",
+                    "offer",
+                }:
+                    application.applied_at = now
+
+        if previous_status != new_status:
+            session.add(
+                JobApplicationEvent(
+                    application_id=application.id,
+                    previous_status=previous_status,
+                    new_status=new_status,
+                )
+            )
+        session.commit()
+        session.refresh(application)
+        return _job_application_item(
+            application,
+            candidate,
+            profile.label,
+            company_name,
+        )
+
+
 def _review_error(error: ValueError) -> HTTPException:
     error_code = str(error)
     if error_code in {"candidate_not_found", "candidate_company_not_found"}:
@@ -884,6 +1117,23 @@ def _review_error(error: ValueError) -> HTTPException:
         "approved_candidate_missing_posting",
         "candidate_posting_already_exists",
         "invalid_candidate_status",
+    }:
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code},
+    )
+
+
+def _application_error(error: ValueError) -> HTTPException:
+    error_code = str(error)
+    if error_code in {"profile_not_found", "candidate_not_found"}:
+        status_code = status.HTTP_404_NOT_FOUND
+    elif error_code in {
+        "application_initial_status_invalid",
+        "application_transition_invalid",
     }:
         status_code = status.HTTP_409_CONFLICT
     else:
@@ -1617,6 +1867,56 @@ def operator_mark_job_viewed(candidate_id: UUID) -> JobViewedResponse:
             detail={"error_code": "candidate_not_found"},
         )
     return viewed
+
+
+@router.get("/applications", response_model=JobApplicationPage)
+def operator_applications(
+    profile: Annotated[str, Query(min_length=1, max_length=100)],
+    application_status: Annotated[ApplicationStatus | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0, le=100000)] = 0,
+) -> JobApplicationPage:
+    try:
+        return load_job_applications(
+            engine,
+            profile_label=profile,
+            application_status=application_status,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as error:
+        raise _application_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/jobs/{candidate_id}/application",
+    response_model=JobApplicationItem,
+)
+def operator_update_job_application(
+    candidate_id: UUID,
+    request: UpdateJobApplicationRequest,
+) -> JobApplicationItem:
+    try:
+        return update_job_application(
+            engine,
+            candidate_id=candidate_id,
+            profile_label=request.profile,
+            new_status=request.status,
+            notes=request.notes,
+            notes_supplied="notes" in request.model_fields_set,
+        )
+    except ValueError as error:
+        raise _application_error(error) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
 
 
 @router.post(

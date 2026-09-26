@@ -386,6 +386,30 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .general-result-actions { display: grid; justify-items: end; gap: 5px; }
 .general-result-actions a { color: var(--green); font-size: 11px; font-weight: 800; text-decoration: none; }
 
+.application-quick-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; align-items: center; }
+.application-quick-actions button { padding: 7px 9px; border-radius: 8px; font-size: 9px; box-shadow: none; }
+.application-status { display: inline-flex; width: fit-content; align-items: center; border-radius: 999px; padding: 6px 9px; background: #edf0eb; color: #59635e; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.application-status.to_apply { background: var(--amber-2); color: var(--amber); }
+.application-status.applied, .application-status.interview, .application-status.offer { background: var(--green-2); color: var(--green); }
+.application-status.rejected, .application-status.withdrawn { background: #fff0ed; color: var(--red); }
+.detail-application-box { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 14px 20px 0; padding: 13px; border: 1px solid #d7e5dc; border-radius: 11px; background: #f0f6f2; }
+.detail-application-box strong, .detail-application-box span { display: block; }
+.detail-application-box strong { font-size: 11px; }
+.detail-application-box span { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.applications-panel { min-height: 500px; }
+.applications-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.applications-head h2 { margin: 0; }
+.applications-head p:not(.eyebrow) { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.applications-head label, .application-card-meta label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.applications-head select, .application-card-meta select { border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--ink); padding: 9px 10px; }
+.application-list { display: grid; gap: 10px; margin-top: 16px; }
+.application-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 20px; align-items: center; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: #fafbf7; }
+.application-card-main h3 { margin: 9px 0 3px; font-size: 15px; }
+.application-card-main p { margin: 0 0 5px; color: #4f5b55; font-size: 12px; }
+.application-card-main small, .application-card-meta small { color: var(--muted); }
+.application-card-meta { display: grid; justify-items: end; gap: 6px; text-align: right; }
+.application-card-meta a { color: var(--green); font-size: 10px; font-weight: 800; text-decoration: none; }
+
 @media (max-width: 1050px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .dashboard-grid, .jobs-layout { grid-template-columns: 1fr; }
@@ -444,6 +468,10 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .native-search-controls, .native-link-grid { grid-template-columns: 1fr; }
   .general-result-card { grid-template-columns: 42px minmax(0, 1fr); }
   .general-result-actions { grid-column: 2; justify-items: start; }
+  .application-quick-actions { justify-content: flex-start; }
+  .applications-head { align-items: stretch; flex-direction: column; }
+  .application-card { grid-template-columns: 1fr; }
+  .application-card-meta { justify-items: start; text-align: left; }
 }
 @media (max-width: 430px) {
   .metric-grid { grid-template-columns: 1fr; }

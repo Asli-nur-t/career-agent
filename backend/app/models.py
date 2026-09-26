@@ -867,6 +867,97 @@ class JobBoardCandidate(Base):
     )
 
 
+class JobApplication(Base):
+    __tablename__ = "job_applications"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "profile_id",
+            name="uq_job_applications_candidate_profile",
+        ),
+        CheckConstraint(
+            "status IN "
+            "('to_apply', 'applied', 'interview', 'rejected', "
+            "'offer', 'withdrawn')",
+            name="ck_job_applications_status",
+        ),
+        CheckConstraint(
+            "notes IS NULL OR char_length(notes) <= 2000",
+            name="ck_job_applications_notes_length",
+        ),
+        Index(
+            "ix_job_applications_profile_status_updated",
+            "profile_id",
+            "status",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_board_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    profile_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30),
+        default="to_apply",
+        server_default="to_apply",
+        nullable=False,
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class JobApplicationEvent(Base):
+    __tablename__ = "job_application_events"
+    __table_args__ = (
+        CheckConstraint(
+            "previous_status IS NULL OR previous_status IN "
+            "('to_apply', 'applied', 'interview', 'rejected', "
+            "'offer', 'withdrawn')",
+            name="ck_job_application_events_previous_status",
+        ),
+        CheckConstraint(
+            "new_status IN "
+            "('to_apply', 'applied', 'interview', 'rejected', "
+            "'offer', 'withdrawn')",
+            name="ck_job_application_events_new_status",
+        ),
+        Index(
+            "ix_job_application_events_application_created",
+            "application_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    application_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    previous_status: Mapped[str | None] = mapped_column(String(30))
+    new_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class CandidateProfile(Base):
     __tablename__ = "candidate_profiles"
     __table_args__ = (

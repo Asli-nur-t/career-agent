@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  ApplicationStatus,
   CompanyDetail,
   CompanyDiscoveryRun,
   CompanyItem,
@@ -8,6 +9,7 @@ import {
   CompanyProfileStatus,
   CompanyRejectionReason,
   JobDetail,
+  JobApplication,
   JobItem,
   NativeSearchLink,
   NativeSearchSource,
@@ -25,6 +27,7 @@ import {
   getCompanies,
   getLatestCompanyDiscoveryRun,
   getJobDetail,
+  getApplications,
   getJobs,
   getProfiles,
   getSummary,
@@ -37,9 +40,10 @@ import {
   resumeCompanyDiscoveryRun,
   startCompanyDiscoveryRun,
   startProfileSearch,
+  updateApplication,
 } from "./api";
 
-type View = "overview" | "search" | "jobs" | "companies";
+type View = "overview" | "search" | "jobs" | "applications" | "companies";
 
 const labels: Record<string, string> = {
   strong_apply: "Güçlü başvuru",
@@ -90,6 +94,22 @@ const labels: Record<string, string> = {
   indeed: "Indeed",
   glassdoor: "Glassdoor",
   ats: "Resmî ATS",
+  turkey_tech: "Türkiye teknoloji",
+  remote_feeds: "Küresel remote",
+  techcareer: "Techcareer.net",
+  yenibiris: "Yenibiriş",
+  secretcv: "SecretCV",
+  toptalent: "Toptalent",
+  weworkremotely: "We Work Remotely",
+  remoteok: "Remote OK",
+  remotive: "Remotive",
+  jobicy: "Jobicy",
+  to_apply: "Başvurulacak",
+  applied: "Başvuruldu",
+  interview: "Mülakat",
+  rejected: "Reddedildi",
+  offer: "Teklif",
+  withdrawn: "Vazgeçildi",
 };
 
 function label(value: string): string {
@@ -158,6 +178,10 @@ function errorMessage(error: unknown): string {
       company_discovery_run_not_paused: "Yalnızca duraklatılmış bir tarama sürdürülebilir.",
       company_discovery_run_unavailable: "Toplu tarama oluşturuldu ancak yeniden okunamadı.",
       company_discovery_run_failed: "Toplu şirket taraması güvenli şekilde durduruldu.",
+      application_initial_status_invalid:
+        "Yeni bir kayıt yalnızca başvurulacak veya başvuruldu olarak başlatılabilir.",
+      application_transition_invalid:
+        "Bu başvuru durumu geçişine izin verilmiyor.",
     };
     return messages[error.code] ?? `İşlem tamamlanamadı: ${error.code}`;
   }
@@ -224,10 +248,108 @@ function MetricCard({ title, value, note, tone = "plain" }: {
   );
 }
 
-function SearchResultsModal({ candidates, onClose, onViewed }: {
+const applicationTransitions: Record<ApplicationStatus, ApplicationStatus[]> = {
+  to_apply: ["applied", "withdrawn"],
+  applied: ["interview", "rejected", "offer", "withdrawn"],
+  interview: ["rejected", "offer", "withdrawn"],
+  rejected: ["to_apply"],
+  offer: ["withdrawn"],
+  withdrawn: ["to_apply"],
+};
+
+function ApplicationQuickActions({
+  status,
+  busy,
+  onUpdate,
+}: {
+  status?: ApplicationStatus;
+  busy: boolean;
+  onUpdate: (status: ApplicationStatus) => void;
+}) {
+  if (!status) {
+    return (
+      <div className="application-quick-actions">
+        <button type="button" className="ghost" disabled={busy} onClick={() => onUpdate("to_apply")}>Başvurulacak</button>
+        <button type="button" className="primary" disabled={busy} onClick={() => onUpdate("applied")}>Başvuruldu</button>
+      </div>
+    );
+  }
+  return (
+    <div className="application-quick-actions">
+      <span className={`application-status ${status}`}>{label(status)}</span>
+      {status === "to_apply" && (
+        <button type="button" className="primary" disabled={busy} onClick={() => onUpdate("applied")}>Başvuruldu</button>
+      )}
+    </div>
+  );
+}
+
+function ApplicationsView({
+  applications,
+  busyCandidate,
+  onUpdate,
+}: {
+  applications: JobApplication[];
+  busyCandidate: string | null;
+  onUpdate: (candidateId: string, status: ApplicationStatus) => void;
+}) {
+  const [statusFilter, setStatusFilter] = useState<"all" | ApplicationStatus>("all");
+  const visible = statusFilter === "all"
+    ? applications
+    : applications.filter((item) => item.status === statusFilter);
+  return (
+    <section className="panel applications-panel">
+      <div className="applications-head">
+        <div><p className="eyebrow">KİŞİSEL TAKİP</p><h2>Başvurularım</h2><p>Arama ve ilan inceleme kararlarından bağımsız, kalıcı başvuru geçmişin.</p></div>
+        <label>Durum
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | ApplicationStatus)}>
+            <option value="all">Tüm durumlar</option>
+            {Object.keys(applicationTransitions).map((status) => <option key={status} value={status}>{label(status)}</option>)}
+          </select>
+        </label>
+      </div>
+      {visible.length === 0 ? (
+        <div className="empty-state"><div>○</div><h3>Başvuru kaydı yok</h3><p>Bir ilan kartında “Başvurulacak” veya “Başvuruldu” seçtiğinde burada görünür.</p></div>
+      ) : (
+        <div className="application-list">
+          {visible.map((application) => (
+            <article className="application-card" key={application.application_id}>
+              <div className="application-card-main">
+                <span className={`application-status ${application.status}`}>{label(application.status)}</span>
+                <h3>{application.title}</h3>
+                <p>{application.company_name}</p>
+                <small>{application.location ?? "Konum bilinmiyor"} · {label(application.provider)} · {label(application.work_mode)}</small>
+              </div>
+              <div className="application-card-meta">
+                <small>Güncelleme: {formatDate(application.updated_at)}</small>
+                {application.applied_at && <small>Başvuru: {formatDate(application.applied_at)}</small>}
+                <a href={application.listing_url} target="_blank" rel="noopener noreferrer">İlanı aç ↗</a>
+                <label>Durumu değiştir
+                  <select
+                    value={application.status}
+                    disabled={busyCandidate === application.candidate_id}
+                    onChange={(event) => onUpdate(application.candidate_id, event.target.value as ApplicationStatus)}
+                  >
+                    <option value={application.status}>{label(application.status)}</option>
+                    {applicationTransitions[application.status].map((status) => <option key={status} value={status}>{label(status)}</option>)}
+                  </select>
+                </label>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SearchResultsModal({ candidates, onClose, onViewed, applicationByCandidate, applicationBusy, onApplication }: {
   candidates: SearchRunCandidate[];
   onClose: () => void;
   onViewed: (candidateId: string) => void;
+  applicationByCandidate: Map<string, JobApplication>;
+  applicationBusy: string | null;
+  onApplication: (candidateId: string, status: ApplicationStatus) => void;
 }) {
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
@@ -261,6 +383,11 @@ function SearchResultsModal({ candidates, onClose, onViewed }: {
                 <b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b>
                 <small>{label(candidate.activity_code)}</small>
                 <a href={candidate.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(candidate.candidate_id)}>İlanı aç ↗</a>
+                <ApplicationQuickActions
+                  status={applicationByCandidate.get(candidate.candidate_id)?.status}
+                  busy={applicationBusy === candidate.candidate_id}
+                  onUpdate={(status) => onApplication(candidate.candidate_id, status)}
+                />
               </div>
             </article>
           ))}
@@ -309,6 +436,9 @@ function GeneralSearchView({
   budget,
   onStart,
   onViewed,
+  applicationByCandidate,
+  applicationBusy,
+  onApplication,
 }: {
   token: string;
   selectedProfile: Profile | null;
@@ -337,6 +467,9 @@ function GeneralSearchView({
   budget: { queryLimit: number; resultLimit: number };
   onStart: () => void;
   onViewed: (candidateId: string) => void;
+  applicationByCandidate: Map<string, JobApplication>;
+  applicationBusy: string | null;
+  onApplication: (candidateId: string, status: ApplicationStatus) => void;
 }) {
   const [resultQuery, setResultQuery] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
@@ -592,7 +725,16 @@ function GeneralSearchView({
               <article className={`general-result-card ${candidate.operator_viewed_at ? "viewed" : "unviewed"}`} key={candidate.candidate_id}>
                 <span className={`score score-${candidate.recommendation}`}>{candidate.score}</span>
                 <div className="general-result-main"><strong>{candidate.title}</strong><span>{candidate.company_name}</span><small>{candidate.location ?? "Konum bilinmiyor"} · {label(candidate.provider)}</small></div>
-                <div className="general-result-actions"><span className={`view-state ${candidate.operator_viewed_at ? "viewed" : "new"}`}>{candidate.operator_viewed_at ? "İncelendi" : "Yeni"}</span><b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b><a href={candidate.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(candidate.candidate_id)}>İlanı aç ↗</a></div>
+                <div className="general-result-actions">
+                  <span className={`view-state ${candidate.operator_viewed_at ? "viewed" : "new"}`}>{candidate.operator_viewed_at ? "İncelendi" : "Yeni"}</span>
+                  <b className={`disposition ${candidate.disposition}`}>{label(candidate.disposition)}</b>
+                  <a href={candidate.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(candidate.candidate_id)}>İlanı aç ↗</a>
+                  <ApplicationQuickActions
+                    status={applicationByCandidate.get(candidate.candidate_id)?.status}
+                    busy={applicationBusy === candidate.candidate_id}
+                    onUpdate={(status) => onApplication(candidate.candidate_id, status)}
+                  />
+                </div>
               </article>
             ))}
           </div>
@@ -622,8 +764,13 @@ function JobRow({ job, active, onSelect }: {
   );
 }
 
-function DetailPanel({ token, detail, onChanged }: {
-  token: string; detail: JobDetail; onChanged: () => Promise<void>;
+function DetailPanel({ token, detail, onChanged, application, applicationBusy, onApplication }: {
+  token: string;
+  detail: JobDetail;
+  onChanged: () => Promise<void>;
+  application?: JobApplication;
+  applicationBusy: boolean;
+  onApplication: (status: ApplicationStatus) => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
   const [companyName, setCompanyName] = useState("");
@@ -678,6 +825,10 @@ function DetailPanel({ token, detail, onChanged }: {
         <div><span>Tür</span><strong>{label(detail.employment_type)}</strong></div>
         <div><span>Yayın</span><strong>{formatDate(detail.published_at)}</strong></div>
       </div>
+      <section className="detail-application-box">
+        <div><strong>Başvuru takibi</strong><span>Bu kayıt ilan inceleme kararından ayrı tutulur.</span></div>
+        <ApplicationQuickActions status={application?.status} busy={applicationBusy} onUpdate={onApplication} />
+      </section>
       <section className="verification-box">
         <div className={`activity-dot ${detail.activity_state}`} />
         <div><strong>Aktiflik: {label(detail.activity_state)}</strong><span>{label(detail.activity_code)}</span></div>
@@ -1243,6 +1394,8 @@ export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profile, setProfile] = useState("");
   const [jobs, setJobs] = useState<JobItem[]>([]);
+  const [applications, setApplications] = useState<JobApplication[]>([]);
+  const [applicationBusy, setApplicationBusy] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [includeUnverified, setIncludeUnverified] = useState(false);
@@ -1285,6 +1438,10 @@ export default function App() {
     searchMode,
     searchSources.length,
   );
+  const applicationByCandidate = useMemo(
+    () => new Map(applications.map((item) => [item.candidate_id, item])),
+    [applications],
+  );
 
   const refreshBase = useCallback(async (activeToken: string) => {
     const [summaryData, profileData] = await Promise.all([
@@ -1301,6 +1458,12 @@ export default function App() {
     setSelected((current) => page.items.some((item) => item.candidate_id === current) ? current : null);
   }, [token, profile, includeUnverified]);
 
+  const refreshApplications = useCallback(async () => {
+    if (!token || !profile) { setApplications([]); return; }
+    const page = await getApplications(token, profile);
+    setApplications(page.items);
+  }, [token, profile]);
+
   useEffect(() => {
     if (!token) return;
     setLoading(true); setError(null);
@@ -1315,6 +1478,11 @@ export default function App() {
     setLoading(true); setError(null);
     refreshJobs().catch((caught) => setError(errorMessage(caught))).finally(() => setLoading(false));
   }, [token, profile, includeUnverified, refreshJobs]);
+
+  useEffect(() => {
+    if (!token || !profile) return;
+    refreshApplications().catch((caught) => setError(errorMessage(caught)));
+  }, [token, profile, refreshApplications]);
 
   useEffect(() => {
     if (!token || !profile) { setSearchRun(null); return; }
@@ -1399,6 +1567,37 @@ export default function App() {
       setError(errorMessage(caught));
     }
   }, [token, applyViewedState]);
+
+  const changeApplication = useCallback(async (
+    candidateId: string,
+    nextStatus: ApplicationStatus,
+  ) => {
+    if (!token || !profile || applicationBusy) return;
+    setApplicationBusy(candidateId);
+    setError(null);
+    try {
+      const updated = await updateApplication(
+        token,
+        candidateId,
+        profile,
+        nextStatus,
+      );
+      setApplications((current) => {
+        const exists = current.some(
+          (item) => item.application_id === updated.application_id,
+        );
+        return exists
+          ? current.map((item) => (
+              item.application_id === updated.application_id ? updated : item
+            ))
+          : [updated, ...current];
+      });
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setApplicationBusy(null);
+    }
+  }, [token, profile, applicationBusy]);
 
   useEffect(() => {
     if (!token || !selected) { setDetail(null); return; }
@@ -1506,13 +1705,14 @@ export default function App() {
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}><span>⌂</span>Genel bakış</button>
           <button className={view === "search" ? "active" : ""} onClick={() => setView("search")}><span>⌕</span>Genel ilan arama<b>{matchedSearchCandidates.length}</b></button>
           <button className={view === "jobs" ? "active" : ""} onClick={() => setView("jobs")}><span>◎</span>İlan kuyruğu<b>{jobs.length}</b></button>
+          <button className={view === "applications" ? "active" : ""} onClick={() => setView("applications")}><span>✓</span>Başvurularım<b>{applications.length}</b></button>
           <button className={view === "companies" ? "active" : ""} onClick={() => setView("companies")}><span>▦</span>Şirketler<b>{summary?.companies ?? 0}</b></button>
         </nav>
         <div className="sidebar-foot"><i /><div><strong>Yerel sistem</strong><span>İnsan onayı etkin</span></div></div>
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : view === "search" ? "Genel ilan arama" : view === "jobs" ? "İlan inceleme kuyruğu" : "Şirket yönetimi"}</h1></div>
+          <div><p className="eyebrow">{todayLabel()}</p><h1>{view === "overview" ? "Günaydın, Aslınur" : view === "search" ? "Genel ilan arama" : view === "jobs" ? "İlan inceleme kuyruğu" : view === "applications" ? "Başvurularım" : "Şirket yönetimi"}</h1></div>
           <div className="top-actions">
             {view !== "companies" && <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}>{profiles.map((item) => <option key={item.label}>{item.label}</option>)}</select></label>}
             <button className="ghost" onClick={() => setToken("")}>Kilitle</button>
@@ -1614,6 +1814,9 @@ export default function App() {
             budget={searchBudget}
             onStart={startSearch}
             onViewed={(candidateId) => { void recordViewed(candidateId); }}
+            applicationByCandidate={applicationByCandidate}
+            applicationBusy={applicationBusy}
+            onApplication={(candidateId, status) => { void changeApplication(candidateId, status); }}
           />
         ) : view === "jobs" ? (
           <div className="jobs-layout">
@@ -1622,11 +1825,13 @@ export default function App() {
               <div className="queue-warning">Yalnızca sayfa üzerinden aktifliği doğrulanan ilanlar varsayılan olarak gösterilir.</div>
               <div className="job-list">{jobs.length === 0 ? <div className="empty-state compact"><div>○</div><h3>Kuyruk boş</h3><p>Bu filtrelerle incelenecek ilan bulunmuyor.</p></div> : jobs.map((job) => <JobRow key={job.candidate_id} job={job} active={selected === job.candidate_id} onSelect={setSelected} />)}</div>
             </section>
-            {detail ? <DetailPanel token={token} detail={detail} onChanged={afterReview} /> : <aside className="detail-placeholder"><div>↗</div><h2>Bir ilan seç</h2><p>Kanıtları, aktiflik kontrolünü ve profil uyumunu burada inceleyebilirsin.</p></aside>}
+            {detail ? <DetailPanel token={token} detail={detail} onChanged={afterReview} application={applicationByCandidate.get(detail.candidate_id)} applicationBusy={applicationBusy === detail.candidate_id} onApplication={(status) => { void changeApplication(detail.candidate_id, status); }} /> : <aside className="detail-placeholder"><div>↗</div><h2>Bir ilan seç</h2><p>Kanıtları, aktiflik kontrolünü ve profil uyumunu burada inceleyebilirsin.</p></aside>}
           </div>
+        ) : view === "applications" ? (
+          <ApplicationsView applications={applications} busyCandidate={applicationBusy} onUpdate={(candidateId, status) => { void changeApplication(candidateId, status); }} />
         ) : <CompaniesView token={token} onError={setError} onReviewed={() => refreshBase(token)} />}
       </main>
-      {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} onViewed={(candidateId) => { void recordViewed(candidateId); }} />}
+      {showSearchResults && <SearchResultsModal candidates={matchedSearchCandidates} onClose={() => setShowSearchResults(false)} onViewed={(candidateId) => { void recordViewed(candidateId); }} applicationByCandidate={applicationByCandidate} applicationBusy={applicationBusy} onApplication={(candidateId, status) => { void changeApplication(candidateId, status); }} />}
     </div>
   );
 }

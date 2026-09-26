@@ -158,6 +158,40 @@ export type JobDetail = {
   operator_viewed_at: string | null;
 };
 
+export type ApplicationStatus =
+  | "to_apply"
+  | "applied"
+  | "interview"
+  | "rejected"
+  | "offer"
+  | "withdrawn";
+
+export type JobApplication = {
+  application_id: string;
+  candidate_id: string;
+  profile: string;
+  status: ApplicationStatus;
+  notes: string | null;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+  provider: string;
+  title: string;
+  company_name: string;
+  listing_url: string;
+  location: string | null;
+  work_mode: string;
+  activity_state: string;
+};
+
+export type JobApplicationPage = {
+  profile: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: JobApplication[];
+};
+
 export type SearchRunCandidate = {
   candidate_id: string;
   provider: string;
@@ -474,6 +508,36 @@ export function markJobViewed(
   return request(token, `/operator/jobs/${encodeURIComponent(id)}/viewed`, {
     method: "POST",
   });
+}
+
+export function getApplications(
+  token: string,
+  profile: string,
+  status?: ApplicationStatus,
+): Promise<JobApplicationPage> {
+  const query = new URLSearchParams({
+    profile,
+    limit: "200",
+    offset: "0",
+  });
+  if (status) query.set("application_status", status);
+  return request(token, `/operator/applications?${query.toString()}`);
+}
+
+export function updateApplication(
+  token: string,
+  candidateId: string,
+  profile: string,
+  status: ApplicationStatus,
+): Promise<JobApplication> {
+  return request(
+    token,
+    `/operator/jobs/${encodeURIComponent(candidateId)}/application`,
+    {
+      method: "POST",
+      body: JSON.stringify({ profile, status }),
+    },
+  );
 }
 
 export function approveJob(

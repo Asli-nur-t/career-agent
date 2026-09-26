@@ -103,6 +103,18 @@ değiştirilmez. Arayüz hiç açılmamış kayıtları **Yeni**, daha önce aç
 soluk **İncelendi** görünümüyle ayırır; görüntülemek ilanı onaylamaz veya
 reddetmez.
 
+İlan kartlarındaki **Başvurulacak** ve **Başvuruldu** işlemleri, adayın inceleme
+durumunu değiştirmeden profile özel bir başvuru kaydı oluşturur. Sol menüdeki
+**Başvurularım** görünümü bu kayıtları durumlarına göre filtreler; başvuru,
+mülakat, red, teklif ve vazgeçme geçişleri buradan yönetilir. Her durum değişimi
+ayrı bir geçmiş kaydıyla aynı transaction içinde saklanır. İlan daha sonra
+kapanır veya arama sonuçlarından düşerse başvuru kaydı silinmez. Yeni veritabanı
+tablolarını oluşturmak için güncellemeden sonra şu komutu çalıştırın:
+
+```bash
+PYTHONPATH=backend python -m alembic upgrade head
+```
+
 Sol menüdeki **Şirketler** görünümü kayıtları 25'erli sayfalar hâlinde,
 profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Her
 şirketin ayrıntı penceresinde keşif kanıtları, tarama zamanları ve doğrulanmış
