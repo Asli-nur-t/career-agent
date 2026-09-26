@@ -48,6 +48,7 @@ from app.models import (
     JobPosting,
     ProfileJobSearchRun,
 )
+from app.native_job_search import build_native_search_links
 from app.operator_auth import require_operator_token
 from app.operator_search_runs import (
     SearchAlreadyRunning,
@@ -329,6 +330,40 @@ class StartSearchRequest(BaseModel):
     max_age_days: int = Field(default=30, ge=1, le=90)
     confirmed_external_search: Literal[True]
     force: bool = False
+
+
+class NativeSearchLinksRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    role: str = Field(min_length=1, max_length=100)
+    location: str | None = Field(default=None, min_length=1, max_length=100)
+    sources: list[
+        Literal[
+            "linkedin",
+            "kariyer",
+            "indeed",
+            "glassdoor",
+            "ats",
+            "turkey_tech",
+            "remote_feeds",
+        ]
+    ] = Field(min_length=1, max_length=7)
+
+
+class NativeSearchLinkItem(BaseModel):
+    provider: str
+    label: str
+    url: str
+    query_prefilled: bool
+    location_prefilled: bool
+    note: str
+
+
+class NativeSearchLinksResponse(BaseModel):
+    role: str
+    location: str | None
+    links: list[NativeSearchLinkItem]
+    unavailable_sources: list[str]
 
 
 class JobViewedResponse(BaseModel):
@@ -1389,6 +1424,32 @@ def operator_resume_company_discovery_run(
         run_id,
     )
     return _company_run_response(snapshot)
+
+
+@router.post(
+    "/native-search-links",
+    response_model=NativeSearchLinksResponse,
+)
+def operator_native_search_links(
+    request: NativeSearchLinksRequest,
+) -> NativeSearchLinksResponse:
+    try:
+        links, unavailable_sources = build_native_search_links(
+            role=request.role,
+            location=request.location,
+            sources=request.sources,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": str(error)},
+        ) from None
+    return NativeSearchLinksResponse(
+        role=request.role,
+        location=request.location,
+        links=[NativeSearchLinkItem(**link.to_dict()) for link in links],
+        unavailable_sources=unavailable_sources,
+    )
 
 
 @router.post(

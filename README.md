@@ -58,6 +58,16 @@ ham sonuç, normalize edilen sonuç ve profile uyan aday sayılarını ayrı gö
 Bu nedenle arama motorunun hiçbir URL döndürmesi ile bulunan ilanların profil
 filtresinde elenmesi birbirinden ayırt edilebilir.
 
+**Tarayıcıda kendin ara** seçeneği otomatik taramaya paralel, kotasız bir
+yardımcı akıştır. Seçilen tek rol için LinkedIn, Kariyer.net, Indeed,
+Glassdoor, Techcareer.net, Yenibiriş, SecretCV, Toptalent, We Work Remotely,
+Remote OK, Remotive ve Jobicy'nin kendi arama veya filtre sayfalarına güvenli
+bağlantılar hazırlar. Kullanıcı her bağlantıyı ayrı ve açık bir işlemle açar;
+uygulama oturum çerezi taşımaz, CAPTCHA atlatmaz ve sayfayı kazımaz. İstemci
+hedef URL gönderemez: şema, alan adı ve yol sunucudaki sabit allowlist'ten
+üretilip yeniden doğrulanır. Birleşik bir pazar sayfası olmayan resmî ATS
+kaynakları bu akışta bağlantı üretmez ve mevcut otomatik taramada kalır.
+
 Günlük otomatik çalışma profil önbelleğine uyar. Operatörün açık onay verdiği
 manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol, konum, çalışma
 biçimi, kaynak, tarih ve tarama modu kapsamı beş dakika içinde yeniden kota

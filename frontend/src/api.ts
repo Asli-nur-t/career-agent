@@ -177,12 +177,29 @@ export type SearchRunCandidate = {
 export type SearchMode = "quick" | "deep";
 export type SearchWorkMode = "remote" | "hybrid" | "onsite";
 export type SearchSource = "linkedin" | "kariyer" | "indeed" | "glassdoor" | "ats";
+export type NativeSearchSource = SearchSource | "turkey_tech" | "remote_feeds";
 
 export type SearchScope = {
   locations: string[];
   workModes: SearchWorkMode[];
   sources: SearchSource[];
   maxAgeDays: number;
+};
+
+export type NativeSearchLink = {
+  provider: string;
+  label: string;
+  url: string;
+  query_prefilled: boolean;
+  location_prefilled: boolean;
+  note: string;
+};
+
+export type NativeSearchLinksResponse = {
+  role: string;
+  location: string | null;
+  links: NativeSearchLink[];
+  unavailable_sources: string[];
 };
 
 export type SearchSourceDiagnostic = {
@@ -423,6 +440,18 @@ export function startProfileSearch(
       confirmed_external_search: true,
       force: true,
     }),
+  });
+}
+
+export function getNativeSearchLinks(
+  token: string,
+  role: string,
+  location: string | null,
+  sources: NativeSearchSource[],
+): Promise<NativeSearchLinksResponse> {
+  return request(token, "/operator/native-search-links", {
+    method: "POST",
+    body: JSON.stringify({ role, location, sources }),
   });
 }
 

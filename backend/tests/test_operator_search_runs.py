@@ -8,8 +8,12 @@ import pytest
 from app.operator_search_runs import (
     SearchCooldownActive,
     _search_fingerprint,
+    normalize_search_age,
+    normalize_search_locations,
     normalize_search_mode,
     normalize_search_roles,
+    normalize_search_sources,
+    normalize_search_work_modes,
     queue_profile_search,
 )
 
@@ -42,6 +46,28 @@ def test_search_mode_is_allowlisted() -> None:
         assert str(error) == "search_mode_invalid"
     else:
         raise AssertionError("Unknown search mode was accepted")
+
+
+def test_general_search_scope_is_normalized_and_allowlisted() -> None:
+    assert normalize_search_locations([" İstanbul ", "İSTANBUL", "Türkiye"]) == [
+        "İstanbul",
+        "Türkiye",
+    ]
+    assert normalize_search_work_modes(["remote", "hybrid"]) == [
+        "remote",
+        "hybrid",
+    ]
+    assert normalize_search_sources(["linkedin", "ats"]) == [
+        "linkedin",
+        "ats",
+    ]
+    assert normalize_search_age(14) == 14
+    with pytest.raises(ValueError, match="search_sources_invalid"):
+        normalize_search_sources(["unsafe"])
+    with pytest.raises(ValueError, match="search_work_modes_invalid"):
+        normalize_search_work_modes(["anywhere"])
+    with pytest.raises(ValueError, match="search_age_invalid"):
+        normalize_search_age(365)
 
 
 def test_forced_identical_search_has_server_side_cooldown() -> None:
@@ -83,3 +109,28 @@ def test_changed_roles_do_not_reuse_manual_cooldown() -> None:
     assert _search_fingerprint("a" * 64, ["AI Engineer"], "quick") != (
         _search_fingerprint("a" * 64, ["Backend Engineer"], "quick")
     )
+
+
+def test_search_scope_changes_fingerprint() -> None:
+    base = _search_fingerprint(
+        "a" * 64,
+        ["AI Engineer"],
+        "quick",
+        sources=["linkedin"],
+        max_age_days=30,
+    )
+    changed_source = _search_fingerprint(
+        "a" * 64,
+        ["AI Engineer"],
+        "quick",
+        sources=["indeed"],
+        max_age_days=30,
+    )
+    changed_age = _search_fingerprint(
+        "a" * 64,
+        ["AI Engineer"],
+        "quick",
+        sources=["linkedin"],
+        max_age_days=7,
+    )
+    assert len({base, changed_source, changed_age}) == 3

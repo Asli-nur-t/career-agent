@@ -622,6 +622,14 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
         "Backend Engineer",
     ]
     assert queue.call_args.kwargs["search_mode"] == "quick"
+    assert queue.call_args.kwargs["requested_locations"] == []
+    assert queue.call_args.kwargs["requested_work_modes"] == [
+        "remote", "hybrid", "onsite"
+    ]
+    assert queue.call_args.kwargs["requested_sources"] == [
+        "linkedin", "kariyer", "indeed", "glassdoor", "ats"
+    ]
+    assert queue.call_args.kwargs["max_listing_age_days"] == 30
     assert queue.call_args.kwargs["force"] is False
     assert execute.call_args.args[1] == run_id
     execute.assert_called_once()
@@ -652,6 +660,10 @@ def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
                 "profile": "aslinur-default",
                 "roles": ["AI Engineer"],
                 "search_mode": "deep",
+                "locations": ["Türkiye"],
+                "work_modes": ["remote"],
+                "sources": ["linkedin", "ats"],
+                "max_age_days": 14,
                 "force": True,
                 "confirmed_external_search": True,
             },
@@ -659,6 +671,10 @@ def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
 
     assert response.status_code == 202
     assert queue.call_args.kwargs["search_mode"] == "deep"
+    assert queue.call_args.kwargs["requested_locations"] == ["Türkiye"]
+    assert queue.call_args.kwargs["requested_work_modes"] == ["remote"]
+    assert queue.call_args.kwargs["requested_sources"] == ["linkedin", "ats"]
+    assert queue.call_args.kwargs["max_listing_age_days"] == 14
     assert queue.call_args.kwargs["force"] is True
     assert execute.call_args.kwargs["force"] is True
 
@@ -724,6 +740,24 @@ def test_operator_rejects_empty_search_roles(monkeypatch) -> None:
         json={
             "profile": "aslinur-default",
             "roles": [],
+            "confirmed_external_search": True,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_operator_rejects_unallowlisted_search_scope(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    response = _client().post(
+        "/operator/search-runs",
+        headers=_headers(),
+        json={
+            "profile": "aslinur-default",
+            "roles": ["AI Engineer"],
+            "sources": ["unsafe-crawler"],
+            "work_modes": ["remote"],
+            "max_age_days": 30,
             "confirmed_external_search": True,
         },
     )

@@ -21,6 +21,8 @@ MANUAL_GLOBAL_COOLDOWN = timedelta(seconds=30)
 SAFE_VALUE_ERRORS = {"profile_not_found", "profile_hash_mismatch"}
 MAX_REQUESTED_ROLES = 10
 SEARCH_MODES = {"quick", "deep"}
+SEARCH_WORK_MODES = {"remote", "hybrid", "onsite"}
+SEARCH_SOURCES = {"linkedin", "kariyer", "indeed", "glassdoor", "ats"}
 
 
 class SearchAlreadyRunning(RuntimeError):
@@ -61,16 +63,75 @@ def normalize_search_mode(value: object) -> str:
     return mode
 
 
+def normalize_search_locations(values: list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list) or len(values) > 3:
+        raise ValueError("search_locations_invalid")
+    locations: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        location = safe_text(value, 100)
+        marker = location.casefold()
+        if location and marker not in seen:
+            seen.add(marker)
+            locations.append(location)
+    return locations
+
+
+def normalize_search_work_modes(values: list[str] | None) -> list[str]:
+    modes = values or ["remote", "hybrid", "onsite"]
+    if (
+        not isinstance(modes, list)
+        or not 1 <= len(modes) <= len(SEARCH_WORK_MODES)
+        or len(set(modes)) != len(modes)
+        or any(mode not in SEARCH_WORK_MODES for mode in modes)
+    ):
+        raise ValueError("search_work_modes_invalid")
+    return modes
+
+
+def normalize_search_sources(values: list[str] | None) -> list[str]:
+    sources = values or ["linkedin", "kariyer", "indeed", "glassdoor", "ats"]
+    if (
+        not isinstance(sources, list)
+        or not 1 <= len(sources) <= len(SEARCH_SOURCES)
+        or len(set(sources)) != len(sources)
+        or any(source not in SEARCH_SOURCES for source in sources)
+    ):
+        raise ValueError("search_sources_invalid")
+    return sources
+
+
+def normalize_search_age(value: int | None) -> int:
+    days = 30 if value is None else value
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
+        raise ValueError("search_age_invalid")
+    return days
+
+
 def _search_fingerprint(
     profile_hash: str,
     roles: list[str],
     search_mode: str,
+    *,
+    locations: list[str] | None = None,
+    work_modes: list[str] | None = None,
+    sources: list[str] | None = None,
+    max_age_days: int | None = None,
 ) -> str:
     payload = json.dumps(
         {
             "profile_hash": profile_hash,
             "roles": sorted((role.casefold() for role in roles)),
             "search_mode": search_mode,
+            "locations": sorted(
+                location.casefold()
+                for location in normalize_search_locations(locations)
+            ),
+            "work_modes": sorted(normalize_search_work_modes(work_modes)),
+            "sources": sorted(normalize_search_sources(sources)),
+            "max_age_days": normalize_search_age(max_age_days),
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -85,6 +146,10 @@ def queue_profile_search(
     profile_label: str,
     requested_roles: list[str] | None = None,
     search_mode: str = "quick",
+    requested_locations: list[str] | None = None,
+    requested_work_modes: list[str] | None = None,
+    requested_sources: list[str] | None = None,
+    max_listing_age_days: int | None = None,
     force: bool = False,
 ) -> UUID:
     now = _now()
@@ -103,7 +168,19 @@ def queue_profile_search(
             requested_roles if requested_roles is not None else profile_roles
         )
         mode = normalize_search_mode(search_mode)
-        fingerprint = _search_fingerprint(profile_hash, roles, mode)
+        locations = normalize_search_locations(requested_locations)
+        work_modes = normalize_search_work_modes(requested_work_modes)
+        sources = normalize_search_sources(requested_sources)
+        age_days = normalize_search_age(max_listing_age_days)
+        fingerprint = _search_fingerprint(
+            profile_hash,
+            roles,
+            mode,
+            locations=locations,
+            work_modes=work_modes,
+            sources=sources,
+            max_age_days=age_days,
+        )
         if force:
             recent_successes = session.scalars(
                 select(ProfileJobSearchRun)
@@ -155,6 +232,10 @@ def queue_profile_search(
             result={
                 "requested_roles": roles,
                 "search_mode": mode,
+                "requested_locations": locations,
+                "requested_work_modes": work_modes,
+                "requested_sources": sources,
+                "max_listing_age_days": age_days,
                 "search_fingerprint": fingerprint,
                 "force": bool(force),
             },
@@ -204,6 +285,26 @@ def execute_profile_search_run(
                 if isinstance(run.result, dict)
                 else "quick"
             )
+            requested_locations = normalize_search_locations(
+                run.result.get("requested_locations")
+                if isinstance(run.result, dict)
+                else None
+            )
+            requested_work_modes = normalize_search_work_modes(
+                run.result.get("requested_work_modes")
+                if isinstance(run.result, dict)
+                else None
+            )
+            requested_sources = normalize_search_sources(
+                run.result.get("requested_sources")
+                if isinstance(run.result, dict)
+                else None
+            )
+            max_listing_age_days = normalize_search_age(
+                run.result.get("max_listing_age_days")
+                if isinstance(run.result, dict)
+                else None
+            )
             queued_force = bool(
                 run.result.get("force")
                 if isinstance(run.result, dict)
@@ -226,6 +327,10 @@ def execute_profile_search_run(
             force=force or queued_force,
             requested_roles=requested_roles,
             search_mode=search_mode,
+            requested_locations=requested_locations,
+            requested_work_modes=requested_work_modes,
+            requested_sources=requested_sources,
+            max_listing_age_days=max_listing_age_days,
         )
     except ProfileSearchError as error:
         _finish_failed(database, run_id, error.code)

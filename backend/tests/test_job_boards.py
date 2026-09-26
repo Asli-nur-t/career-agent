@@ -95,6 +95,25 @@ class JobBoardTests(unittest.TestCase):
                 1,
             )
 
+        selected_sources = build_profile_job_queries(
+            (("AI Engineer",),),
+            sources=("indeed", "ats"),
+            max_queries=10,
+        )
+        self.assertEqual(len(selected_sources), 2)
+        self.assertIn("tr.indeed.com/viewjob", selected_sources[0])
+        self.assertIn("jobs.ashbyhq.com", selected_sources[1])
+        self.assertTrue(
+            all("linkedin.com/jobs/view" not in query for query in selected_sources)
+        )
+
+    def test_profile_queries_reject_unknown_source(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sources are invalid"):
+            build_profile_job_queries(
+                (("AI Engineer",),),
+                sources=("linkedin", "unsafe"),
+            )
+
     def test_activity_provider_filter_verifies_only_official_ats(self) -> None:
         results = [
             SearchResult(

@@ -9,6 +9,8 @@ import {
   CompanyRejectionReason,
   JobDetail,
   JobItem,
+  NativeSearchLink,
+  NativeSearchSource,
   Profile,
   SearchMode,
   SearchRun,
@@ -27,6 +29,7 @@ import {
   getProfiles,
   getSummary,
   getLatestProfileSearch,
+  getNativeSearchLinks,
   markJobViewed,
   rejectJob,
   rejectCompany,
@@ -270,11 +273,16 @@ function SearchResultsModal({ candidates, onClose, onViewed }: {
 const generalSearchSources: SearchSource[] = [
   "linkedin", "kariyer", "indeed", "glassdoor", "ats",
 ];
+const nativeSearchSources: NativeSearchSource[] = [
+  "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+  "turkey_tech", "remote_feeds",
+];
 const generalSearchWorkModes: SearchWorkMode[] = [
   "remote", "hybrid", "onsite",
 ];
 
 function GeneralSearchView({
+  token,
   selectedProfile,
   roles,
   availableRoles,
@@ -302,6 +310,7 @@ function GeneralSearchView({
   onStart,
   onViewed,
 }: {
+  token: string;
   selectedProfile: Profile | null;
   roles: string[];
   availableRoles: string[];
@@ -333,6 +342,12 @@ function GeneralSearchView({
   const [providerFilter, setProviderFilter] = useState("all");
   const [dispositionFilter, setDispositionFilter] = useState("all");
   const [viewFilter, setViewFilter] = useState("all");
+  const [nativeRole, setNativeRole] = useState(roles[0] ?? "");
+  const [nativeLocation, setNativeLocation] = useState(locations[0] ?? "");
+  const [nativeLinks, setNativeLinks] = useState<NativeSearchLink[]>([]);
+  const [nativeUnavailable, setNativeUnavailable] = useState<string[]>([]);
+  const [nativeLoading, setNativeLoading] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
   const candidates = run?.result.matched_candidates ?? [];
   const sourceDiagnostics = run?.result.source_diagnostics ?? [];
   const providers = useMemo(
@@ -355,6 +370,42 @@ function GeneralSearchView({
         .some((value) => value.toLocaleLowerCase("tr-TR").includes(query));
     });
   }, [candidates, dispositionFilter, providerFilter, resultQuery, viewFilter]);
+
+  useEffect(() => {
+    if (!roles.includes(nativeRole)) setNativeRole(roles[0] ?? "");
+  }, [nativeRole, roles]);
+
+  useEffect(() => {
+    if (nativeLocation && !locations.includes(nativeLocation)) {
+      setNativeLocation(locations[0] ?? "");
+    }
+  }, [locations, nativeLocation]);
+
+  useEffect(() => {
+    setNativeLinks([]);
+    setNativeUnavailable([]);
+    setNativeError(null);
+  }, [nativeLocation, nativeRole]);
+
+  async function prepareNativeLinks() {
+    if (!nativeRole || nativeLoading) return;
+    setNativeLoading(true);
+    setNativeError(null);
+    try {
+      const response = await getNativeSearchLinks(
+        token,
+        nativeRole,
+        nativeLocation || null,
+        nativeSearchSources,
+      );
+      setNativeLinks(response.links);
+      setNativeUnavailable(response.unavailable_sources);
+    } catch (caught) {
+      setNativeError(errorMessage(caught));
+    } finally {
+      setNativeLoading(false);
+    }
+  }
 
   return (
     <div className="general-search-page">
@@ -443,6 +494,46 @@ function GeneralSearchView({
           </button>
         </div>
         {running && <div className="search-progress"><i /></div>}
+
+        <section className="native-search-panel">
+          <div className="native-search-copy">
+            <p className="eyebrow">TARAYICIDA KENDİN ARA</p>
+            <h3>12 iş sitesinin kendi aramasını aç</h3>
+            <p>Otomatik taramadan bağımsızdır ve arama kotası harcamaz. LinkedIn, Kariyer.net, Indeed, Glassdoor, Techcareer, Yenibiriş, SecretCV, Toptalent ve dört remote kaynak için güvenli bağlantılar hazırlanır.</p>
+          </div>
+          <div className="native-search-controls">
+            <label>Rol
+              <select value={nativeRole} onChange={(event) => setNativeRole(event.target.value)}>
+                {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+              </select>
+            </label>
+            <label>Konum
+              <select value={nativeLocation} onChange={(event) => setNativeLocation(event.target.value)}>
+                <option value="">Kaynak sitede seç</option>
+                {locations.map((location) => <option key={location} value={location}>{location}</option>)}
+              </select>
+            </label>
+            <button className="ghost" type="button" onClick={() => { void prepareNativeLinks(); }} disabled={!nativeRole || nativeLoading}>
+              {nativeLoading ? "Hazırlanıyor…" : "12 kaynak bağlantısını hazırla"}
+            </button>
+          </div>
+          {nativeError && <p className="native-search-error">{nativeError}</p>}
+          {nativeUnavailable.includes("ats") && <p className="native-search-note">Resmî ATS tek bir pazar arama sayfası olmadığı için mevcut otomatik taramada kalır.</p>}
+          {nativeLinks.length > 0 && (
+            <div className="native-link-grid">
+              {nativeLinks.map((item) => (
+                <article key={item.provider}>
+                  <div>
+                    <strong>{item.label}</strong>
+                    <span>{item.query_prefilled ? "Rol hazır" : "Filtreyi sitede tamamla"}{item.location_prefilled ? " · Konum hazır" : ""}</span>
+                  </div>
+                  <p>{item.note}</p>
+                  <a href={item.url} target="_blank" rel="noopener noreferrer">Kaynakta aç ↗</a>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
       </section>
 
       <section className="panel general-results-panel">
@@ -1496,6 +1587,7 @@ export default function App() {
           </div>
         ) : view === "search" ? (
           <GeneralSearchView
+            token={token}
             selectedProfile={selectedProfile}
             roles={searchRoles}
             availableRoles={availableSearchRoles}
