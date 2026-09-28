@@ -68,6 +68,71 @@ hedef URL gönderemez: şema, alan adı ve yol sunucudaki sabit allowlist'ten
 üretilip yeniden doğrulanır. Birleşik bir pazar sayfası olmayan resmî ATS
 kaynakları bu akışta bağlantı üretmez ve mevcut otomatik taramada kalır.
 
+**Yerel tarayıcı ajanı** seçili rol ve konum için görünür bir Chrome penceresi
+açar; seçilen LinkedIn, Kariyer.net, Indeed, Glassdoor, Techcareer.net,
+Yenibiriş, SecretCV, Toptalent ve remote iş kaynaklarının kendi arama
+sayfalarındaki kartları okur. Playwright tarayıcı ve sayfa araç katmanıdır;
+karar veren ajan, yerel Ollama'daki `qwen3:8b` modelidir. Model yalnızca
+sunucunun numaralandırdığı güvenli filtre kontrolleri üzerinde rol/konum
+doldurma, mevcut bir seçenek seçme, arama/filtremeyi tıklama veya bitirme
+araçlarından birini çağırabilir. Serbest CSS seçici, serbest URL, giriş,
+başvuru, CV yükleme, hesap, ödeme veya silme aracı verilmez. En fazla altı araç
+adımı sonunda kontrol deterministik toplayıcıya geri döner.
+
+Kaynak başına en fazla 10 benzersiz ilan mevcut inceleme kuyruğuna aktarılır.
+Her URL aynı katı alan adı ve ilan-yolu allowlist'i ile doğrulanır. Bir kaynak
+giriş duvarı veya robot kontrolü gösterirse yalnızca o kaynak raporlanıp
+atlanır; diğer kaynaklar çalışmaya devam eder. Google SSO, otomasyon penceresini
+reddedebildiği için ajan girişe bağımlı tasarlanmamıştır ve hiçbir CAPTCHA ya da
+güvenlik kontrolünü atlatmaz. Ajan ayrı ve repoya alınmayan
+`.browser-agent-profile` dizinini kullanır; kişisel Chrome profilini doğrudan
+otomasyona vermez. Kurulumdan sonra sistemdeki Chrome'u kullanmak için ek bir
+Chromium indirmesi gerekmez:
+
+Toplanan kayıtlar profil puanlamasını beklemeden aynı paneldeki kalıcı
+**Toplanan ilanlar** listesinde gösterilir. Liste veritabanından okunur; sayfa
+yenileme veya backend yeniden başlatma sonucunda kaybolmaz. Ajan kayıtları ayrı
+bir aktivite koduyla işaretlenir, önceki manuel/ilk ajan kayıtları da geriye
+dönük görünür tutulur.
+
+Ajan ilan ayrıntı metnini aynı görünür tarayıcı oturumunda okur ve yalnızca
+yerel Ollama'ya gönderir. Qwen zorunlu/tercih edilen şartları, açık deneyim
+alt sınırını ve olası engelleri yapılandırılmış JSON olarak çıkarır; gizli
+düşünce zinciri kaydedilmez. Nihai 1–5 yıldız ve başvuru önerisi deterministik
+puan sınırlarıyla hesaplanır. Örneğin 0 yıl isteyen uygun bir junior ilan yüksek
+puan alabilirken 3+ yıl isteyen ilan, diğer beceriler uyuşsa bile deneyim açığı
+nedeniyle en fazla 44 puan alır. Profesyonel yıl ve staj ayı operatör ekranında
+ayrı tutulur; profil değiştiğinde önceki ajan değerlendirmeleri geçersizleşir ve
+metni bulunan en yeni ilanlar yeniden değerlendirilir.
+
+```dotenv
+LOCAL_JOB_AGENT_ENABLED=true
+OLLAMA_AGENT_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Yerel ajan ulaşılamazsa tarama bütünüyle kaybolmaz: güvenli, kurallı toplayıcı
+çalışmaya devam eder ve arayüz o kaynak için yedek akış kullanıldığını gösterir.
+
+Kart ayrıştırıcısı kaynak sayfanın erişilebilirlik ve eylem metinlerini
+(`ile ilgili tüm ayrıntılar`, `Kolayca başvur` gibi) başlık, işveren veya konum
+olarak kaydetmez. Bilinen örnek/placeholder ilan kimlikleri içe alınmaz.
+**Bozukları ayıkla** işlemi daha önce kaydedilmiş kart metinlerini onarır ve
+geçersiz örnek bağlantıları silmek yerine denetlenebilir biçimde karantinaya
+alır.
+
+```bash
+python -m pip install -r backend/requirements.txt
+```
+
+Kaynak sitede bulunan bir ilan, aynı panelde bağlantı, başlık, şirket ve isteğe
+bağlı konum bilgileriyle inceleme kuyruğuna aktarılabilir. Aktarım yalnızca
+desteklenen 12 iş sitesi ile Greenhouse, Lever ve Ashby'nin ilan URL kalıplarını
+kabul eder; backend hedef sayfayı açmaz ve oturum bilgisi taşımaz. Operatörün
+ilanı tarayıcıda görünür gördüğünü ayrıca işaretlemesi gerekir. Aynı sağlayıcı ve
+ilan kimliği ikinci kez gönderilirse açık inceleme kaydı güncellenir; daha önce
+onaylanan, reddedilen veya elenen kayıtların kararı yeniden açılmaz.
+
 Günlük otomatik çalışma profil önbelleğine uyar. Operatörün açık onay verdiği
 manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol, konum, çalışma
 biçimi, kaynak, tarih ve tarama modu kapsamı beş dakika içinde yeniden kota

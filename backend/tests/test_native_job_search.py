@@ -10,6 +10,7 @@ from app.main import app
 from app.native_job_search import (
     ALLOWED_DESTINATIONS,
     build_native_search_links,
+    build_provider_search_links,
 )
 
 
@@ -73,6 +74,21 @@ def test_control_characters_fail_closed() -> None:
             role="Software\x00Engineer",
             location=None,
             sources=["linkedin"],
+        )
+
+
+def test_provider_links_reject_unknown_or_empty_selection() -> None:
+    with pytest.raises(ValueError, match="native_search_provider_invalid"):
+        build_provider_search_links(
+            role="Software Engineer",
+            location=None,
+            providers=[],
+        )
+    with pytest.raises(ValueError, match="native_search_provider_invalid"):
+        build_provider_search_links(
+            role="Software Engineer",
+            location=None,
+            providers=["evil_source"],
         )
 
 

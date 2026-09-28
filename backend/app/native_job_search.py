@@ -207,3 +207,28 @@ def build_native_search_links(
         for provider in providers
     ]
     return links, unavailable
+
+
+def build_provider_search_links(
+    *,
+    role: str,
+    location: str | None,
+    providers: list[str],
+) -> list[NativeSearchLink]:
+    """Build links for an explicit, allowlisted provider selection."""
+
+    cleaned_role = _clean_term(role, field="role")
+    cleaned_location = _clean_term(location, field="location") if location else ""
+    if not providers or len(providers) > len(PROVIDER_LABELS):
+        raise ValueError("native_search_provider_invalid")
+
+    unique: list[str] = []
+    for provider in providers:
+        if provider not in PROVIDER_LABELS:
+            raise ValueError("native_search_provider_invalid")
+        if provider not in unique:
+            unique.append(provider)
+    return [
+        _build_url(provider, cleaned_role, cleaned_location)
+        for provider in unique
+    ]

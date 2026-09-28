@@ -195,7 +195,7 @@ def load_queue(
             statement = statement.where(
                 JobBoardCandidate.activity_state == "active",
                 JobBoardCandidate.activity_code.in_(
-                    PAGE_VERIFIED_ACTIVE_CODES
+                    (*PAGE_VERIFIED_ACTIVE_CODES, "manual_operator_listing_confirmation")
                 ),
             )
         if provider is not None:

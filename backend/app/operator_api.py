@@ -1,12 +1,15 @@
 """Authenticated API used by the local operator console."""
 
+import hashlib
+import os
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,11 @@ from app.database import engine
 from app.company_profile_search_service import (
     CompanyProfileSearchError,
     discover_company_profile,
+)
+from app.browser_job_agent import (
+    BrowserAgentError,
+    collect_browser_jobs,
+    normalize_browser_card_fields,
 )
 from app.company_discovery_runs import (
     CompanyDiscoveryRunError,
@@ -35,7 +43,19 @@ from app.discovery.schemas import SearchResult
 from app.job_boards import (
     SUPPORTED_JOB_PROVIDERS,
     UNKNOWN_EMPLOYER,
-    normalize_job_board_result,
+)
+from app.local_job_agent import (
+    LocalJobAgentError,
+    LocalOllamaJobAgent,
+    finalize_job_assessment,
+    profile_agent_hash,
+)
+from app.matching import CandidateProfileSpec
+from app.manual_job_import import (
+    MANUAL_JOB_PROVIDERS,
+    PLACEHOLDER_JOB_IDENTIFIERS,
+    is_placeholder_job_identifier,
+    normalize_manual_job_result,
 )
 from app.models import (
     CandidateProfile,
@@ -46,6 +66,7 @@ from app.models import (
     JobApplication,
     JobApplicationEvent,
     JobBoardCandidate,
+    JobCandidateAssessment,
     JobMatch,
     JobPosting,
     ProfileJobSearchRun,
@@ -61,7 +82,7 @@ from app.operator_search_runs import (
 )
 from app.review_company_profile import review_company_profile
 from app.review_job_board_candidate import review_job_board_candidate
-from app.review_job_board_queue import RankedCandidate, load_queue
+from app.review_job_board_queue import RankedCandidate, load_queue, rank_candidate
 
 
 router = APIRouter(
@@ -123,8 +144,18 @@ class OperatorSummary(BaseModel):
 class OperatorProfileItem(BaseModel):
     label: str
     target_roles: list[str]
+    skills: list[str]
+    professional_experience_years: int = Field(ge=0, le=50)
+    internship_months: int = Field(ge=0, le=120)
     next_search_at: datetime | None
     last_search_outcome: str | None
+
+
+class UpdateProfileExperienceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    professional_experience_years: int = Field(ge=0, le=50)
+    internship_months: int = Field(ge=0, le=120)
 
 
 class OperatorCompanyItem(BaseModel):
@@ -339,13 +370,27 @@ class StartSearchRequest(BaseModel):
         max_length=3,
     )
     sources: list[
-        Literal["linkedin", "kariyer", "indeed", "glassdoor", "ats"]
+        Literal[
+            "linkedin",
+            "kariyer",
+            "indeed",
+            "glassdoor",
+            "ats",
+            "turkey_tech",
+            "remote_feeds",
+        ]
     ] = Field(
         default_factory=lambda: [
-            "linkedin", "kariyer", "indeed", "glassdoor", "ats"
+            "linkedin",
+            "kariyer",
+            "indeed",
+            "glassdoor",
+            "ats",
+            "turkey_tech",
+            "remote_feeds",
         ],
         min_length=1,
-        max_length=5,
+        max_length=7,
     )
     max_age_days: int = Field(default=30, ge=1, le=90)
     confirmed_external_search: Literal[True]
@@ -384,6 +429,139 @@ class NativeSearchLinksResponse(BaseModel):
     location: str | None
     links: list[NativeSearchLinkItem]
     unavailable_sources: list[str]
+
+
+class ImportManualJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    listing_url: str = Field(min_length=1, max_length=2048)
+    title: str = Field(min_length=1, max_length=300)
+    company_name: str = Field(min_length=1, max_length=500)
+    location: str | None = Field(default=None, min_length=1, max_length=500)
+    work_mode: Literal["remote", "hybrid", "onsite", "unknown"] = "unknown"
+    employment_type: Literal[
+        "full_time",
+        "part_time",
+        "contract",
+        "internship",
+        "temporary",
+        "unknown",
+    ] = "unknown"
+    description_text: str | None = Field(default=None, max_length=20_000)
+    confirmed_visible: Literal[True]
+
+
+class ImportManualJobResponse(BaseModel):
+    candidate_id: UUID
+    provider: str
+    listing_url: str
+    status: str
+    created: bool
+    changed: bool
+
+
+class BrowserCollectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    provider: Literal[
+        "linkedin",
+        "kariyer",
+        "indeed",
+        "glassdoor",
+        "techcareer",
+        "yenibiris",
+        "secretcv",
+        "toptalent",
+        "weworkremotely",
+        "remoteok",
+        "remotive",
+        "jobicy",
+    ] | None = None
+    providers: list[
+        Literal[
+            "linkedin",
+            "kariyer",
+            "indeed",
+            "glassdoor",
+            "techcareer",
+            "yenibiris",
+            "secretcv",
+            "toptalent",
+            "weworkremotely",
+            "remoteok",
+            "remotive",
+            "jobicy",
+        ]
+    ] = Field(default_factory=list, max_length=12)
+    role: str = Field(min_length=1, max_length=100)
+    location: str | None = Field(default=None, min_length=1, max_length=100)
+    work_modes: list[Literal["remote", "hybrid", "onsite"]] = Field(
+        default_factory=lambda: ["remote", "hybrid", "onsite"],
+        min_length=1,
+        max_length=3,
+    )
+    max_results: int | None = Field(default=None, ge=1, le=20)
+    max_results_per_provider: int = Field(default=10, ge=1, le=20)
+    profile: str = Field(min_length=1, max_length=100)
+    confirmed_browser_launch: Literal[True]
+
+
+class BrowserSourceDiagnosticItem(BaseModel):
+    provider: str
+    label: str
+    outcome: Literal["collected", "no_results", "login_required", "failed"]
+    collected_count: int
+    error_code: str | None
+    agent_used: bool = False
+    agent_action_count: int = Field(default=0, ge=0, le=10)
+
+
+class BrowserCollectResponse(BaseModel):
+    provider: str
+    providers: list[str] = Field(default_factory=list)
+    collected_count: int
+    created_count: int
+    updated_count: int
+    skipped_count: int = 0
+    assessment_queued_count: int = 0
+    candidate_ids: list[UUID]
+    diagnostics: list[BrowserSourceDiagnosticItem] = Field(default_factory=list)
+
+
+class BrowserCollectedItem(BaseModel):
+    candidate_id: UUID
+    provider: str
+    title: str
+    company_name: str
+    listing_url: str
+    location: str | None
+    work_mode: Literal["remote", "hybrid", "onsite", "unknown"]
+    status: str
+    collected_at: datetime
+    assessment_state: Literal["ready", "pending", "unavailable"] = "unavailable"
+    fit_score: int | None = Field(default=None, ge=0, le=100)
+    fit_stars: int | None = Field(default=None, ge=1, le=5)
+    fit_recommendation: str | None = None
+    fit_confidence: Literal["low", "medium", "high"] | None = None
+    required_experience_min: int | None = Field(default=None, ge=0, le=50)
+    experience_gap: int | None = Field(default=None, ge=0, le=50)
+    matched_requirements: list[str] = Field(default_factory=list)
+    missing_requirements: list[str] = Field(default_factory=list)
+    preferred_requirements: list[str] = Field(default_factory=list)
+    hard_blockers: list[str] = Field(default_factory=list)
+    fit_summary: str | None = None
+
+
+class BrowserCollectedPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[BrowserCollectedItem]
+
+
+class BrowserCleanupResponse(BaseModel):
+    repaired_count: int
+    quarantined_count: int
 
 
 class JobViewedResponse(BaseModel):
@@ -506,6 +684,9 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
             select(
                 CandidateProfile.label,
                 CandidateProfile.target_roles,
+                CandidateProfile.skills,
+                CandidateProfile.max_years_experience,
+                CandidateProfile.internship_months,
                 CandidateProfile.job_search_next_check_at,
                 CandidateProfile.job_search_last_outcome,
             ).order_by(CandidateProfile.label)
@@ -514,11 +695,73 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
         OperatorProfileItem(
             label=label,
             target_roles=roles if isinstance(roles, list) else [],
+            skills=skills if isinstance(skills, list) else [],
+            professional_experience_years=professional_years,
+            internship_months=internship_months,
             next_search_at=next_search_at,
             last_search_outcome=last_outcome,
         )
-        for label, roles, next_search_at, last_outcome in rows
+        for (
+            label,
+            roles,
+            skills,
+            professional_years,
+            internship_months,
+            next_search_at,
+            last_outcome,
+        ) in rows
     ]
+
+
+def _candidate_profile_spec(profile: CandidateProfile) -> CandidateProfileSpec:
+    return CandidateProfileSpec(
+        label=profile.label,
+        target_roles=profile.target_roles,
+        secondary_roles=profile.secondary_roles,
+        tertiary_roles=profile.tertiary_roles,
+        skills=profile.skills,
+        preferred_locations=profile.preferred_locations,
+        preferred_remote_locations=profile.preferred_remote_locations,
+        excluded_locations=profile.excluded_locations,
+        allowed_work_modes=profile.allowed_work_modes,
+        location_filter_mode=profile.location_filter_mode,
+        max_listing_age_days=profile.max_listing_age_days,
+        excluded_keywords=profile.excluded_keywords,
+        max_years_experience=profile.max_years_experience,
+        remote_allowed=profile.remote_allowed,
+    )
+
+
+def update_profile_experience(
+    database: Engine,
+    *,
+    profile_label: str,
+    professional_experience_years: int,
+    internship_months: int,
+) -> OperatorProfileItem | None:
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile)
+            .where(CandidateProfile.label == profile_label)
+            .with_for_update()
+        )
+        if profile is None:
+            return None
+        profile.max_years_experience = professional_experience_years
+        profile.internship_months = internship_months
+        profile.config_hash = _candidate_profile_spec(profile).config_hash()
+        session.query(JobCandidateAssessment).filter(
+            JobCandidateAssessment.profile_id == profile.id
+        ).delete(synchronize_session=False)
+        session.commit()
+    return next(
+        (
+            item
+            for item in load_operator_profiles(database)
+            if item.label == profile_label
+        ),
+        None,
+    )
 
 
 def _safe_public_url(value: object, *, linkedin: bool = False) -> str | None:
@@ -796,7 +1039,7 @@ def _validated_listing_url(
     listing_url: str,
 ) -> str:
     try:
-        normalized = normalize_job_board_result(
+        normalized = normalize_manual_job_result(
             SearchResult(
                 title=title,
                 url=listing_url,
@@ -926,6 +1169,563 @@ def mark_operator_job_viewed(
             candidate_id=candidate.id,
             operator_viewed_at=candidate.operator_viewed_at,
         )
+
+
+def import_manual_job_candidate(
+    database: Engine,
+    request: ImportManualJobRequest,
+    *,
+    origin: Literal["manual", "browser_agent"] = "manual",
+    search_role: str | None = None,
+) -> ImportManualJobResponse:
+    listing = normalize_manual_job_result(
+        SearchResult(
+            title=request.title,
+            url=request.listing_url,
+            snippet="",
+            position=1,
+        )
+    )
+    if listing.provider not in MANUAL_JOB_PROVIDERS:
+        raise ValueError("provider_invalid")
+
+    company_name = safe_text(request.company_name, 500)
+    title = safe_text(request.title, 300)
+    location = safe_text(request.location, 500) if request.location else None
+    description_text = (
+        safe_text(request.description_text, 20_000)
+        if request.description_text
+        else None
+    )
+    if not company_name or not title:
+        raise ValueError("manual_job_invalid")
+
+    now = datetime.now(timezone.utc)
+    evidence_kind = (
+        "browser_agent_import" if origin == "browser_agent" else "manual_operator_import"
+    )
+    activity_code = (
+        "browser_agent_listing_confirmation"
+        if origin == "browser_agent"
+        else "manual_operator_listing_confirmation"
+    )
+    evidence = {
+        "kind": evidence_kind,
+        "url": listing.listing_url,
+        "confirmed_visible": "true",
+        "checked_at": now.isoformat(),
+    }
+    if origin == "browser_agent" and search_role:
+        evidence["search_role"] = safe_text(search_role, 100)
+    with Session(database) as session:
+        candidate = session.scalar(
+            select(JobBoardCandidate)
+            .where(
+                JobBoardCandidate.provider == listing.provider,
+                JobBoardCandidate.external_id == listing.external_id,
+            )
+            .with_for_update()
+        )
+        created = candidate is None
+        changed = False
+        if candidate is None:
+            candidate = JobBoardCandidate(
+                company_id=None,
+                provider=listing.provider,
+                external_id=listing.external_id,
+                listing_url=listing.listing_url,
+                title=title,
+                company_name_raw=company_name,
+                location=location,
+                work_mode=request.work_mode,
+                employment_type=request.employment_type,
+                activity_state="active",
+                activity_code=activity_code,
+                activity_checked_at=now,
+                snippet=description_text,
+                status="needs_review",
+                evidence=[evidence],
+                last_seen_at=now,
+                updated_at=now,
+            )
+            session.add(candidate)
+            changed = True
+        elif candidate.status == "needs_review":
+            candidate.listing_url = listing.listing_url
+            candidate.title = title
+            candidate.company_name_raw = company_name
+            candidate.location = location
+            candidate.work_mode = request.work_mode
+            candidate.employment_type = request.employment_type
+            if description_text:
+                candidate.snippet = description_text
+            candidate.activity_state = "active"
+            candidate.activity_code = activity_code
+            candidate.activity_checked_at = now
+            candidate.last_seen_at = now
+            candidate.updated_at = now
+            candidate.evidence = [*(candidate.evidence or [])[-19:], evidence]
+            changed = True
+        session.commit()
+        session.refresh(candidate)
+        return ImportManualJobResponse(
+            candidate_id=candidate.id,
+            provider=candidate.provider,
+            listing_url=candidate.listing_url,
+            status=candidate.status,
+            created=created,
+            changed=changed,
+        )
+
+
+def _candidate_content_hash(candidate: JobBoardCandidate) -> str:
+    content = "\0".join(
+        (
+            safe_text(candidate.title, 500),
+            safe_text(candidate.company_name_raw, 500),
+            safe_text(candidate.location, 500),
+            safe_text(candidate.work_mode, 20),
+            safe_text(candidate.snippet, 20_000),
+        )
+    )
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _candidate_search_role(candidate: JobBoardCandidate) -> str | None:
+    evidence = candidate.evidence if isinstance(candidate.evidence, list) else []
+    for item in reversed(evidence[-20:]):
+        if not isinstance(item, dict) or item.get("kind") != "browser_agent_import":
+            continue
+        role = safe_text(item.get("search_role"), 100)
+        if role:
+            return role
+    return None
+
+
+def assess_browser_candidates(
+    database: Engine,
+    *,
+    profile_label: str,
+    candidate_ids: list[UUID],
+) -> int:
+    """Assess collected jobs locally; failures never discard collected records."""
+
+    bounded_ids = list(dict.fromkeys(candidate_ids))[:100]
+    if not bounded_ids:
+        return 0
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            return 0
+        profile_spec = _candidate_profile_spec(profile)
+        profile_data = {
+            "label": profile.label,
+            "target_roles": list(profile.target_roles),
+            "skills": list(profile.skills),
+            "professional_years": profile.max_years_experience,
+            "internship_months": profile.internship_months,
+            "preferred_locations": list(profile.preferred_locations),
+            "allowed_work_modes": list(profile.allowed_work_modes),
+        }
+        candidates = list(
+            session.scalars(
+                select(JobBoardCandidate).where(
+                    JobBoardCandidate.id.in_(bounded_ids),
+                    JobBoardCandidate.status != "filtered_out",
+                )
+            )
+        )
+        existing_rows = list(
+            session.scalars(
+                select(JobCandidateAssessment).where(
+                    JobCandidateAssessment.profile_id == profile.id,
+                    JobCandidateAssessment.candidate_id.in_(bounded_ids),
+                )
+            )
+        )
+        existing_hashes = {
+            item.candidate_id: (item.job_content_hash, item.profile_hash)
+            for item in existing_rows
+        }
+        profile_id = profile.id
+
+    try:
+        agent = LocalOllamaJobAgent(
+            model=os.getenv("OLLAMA_AGENT_MODEL", "qwen3:8b"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        )
+    except ValueError:
+        return 0
+
+    assessed_count = 0
+    try:
+        for candidate in candidates:
+            description = safe_text(candidate.snippet, 20_000)
+            if len(description) < 100:
+                continue
+            requested_role = _candidate_search_role(candidate)
+            effective_roles = list(
+                dict.fromkeys(
+                    [
+                        role
+                        for role in [requested_role, *profile_data["target_roles"]]
+                        if role
+                    ]
+                )
+            )[:30]
+            candidate_profile_hash = profile_agent_hash(
+                label=profile_data["label"],
+                target_roles=effective_roles,
+                skills=profile_data["skills"],
+                professional_years=profile_data["professional_years"],
+                internship_months=profile_data["internship_months"],
+                preferred_locations=profile_data["preferred_locations"],
+                allowed_work_modes=profile_data["allowed_work_modes"],
+            )
+            job_hash = _candidate_content_hash(candidate)
+            if existing_hashes.get(candidate.id) == (
+                job_hash,
+                candidate_profile_hash,
+            ):
+                continue
+            company_name = safe_text(candidate.company_name_raw, 500) or UNKNOWN_EMPLOYER
+            base = rank_candidate(
+                profile_spec.model_copy(update={"target_roles": effective_roles}),
+                candidate_id=candidate.id,
+                provider=candidate.provider,
+                company_name=company_name,
+                title=candidate.title,
+                listing_url=candidate.listing_url,
+                snippet=description,
+                location=candidate.location,
+                work_mode=candidate.work_mode,
+                employment_type=candidate.employment_type,
+                published_at=candidate.published_at,
+                activity_state=candidate.activity_state,
+                activity_code=candidate.activity_code,
+                operator_viewed_at=candidate.operator_viewed_at,
+            )
+            try:
+                analysis = agent.assess_job(
+                    title=candidate.title,
+                    company_name=company_name,
+                    location=candidate.location,
+                    work_mode=candidate.work_mode,
+                    description_text=description,
+                    target_roles=effective_roles,
+                    skills=profile_data["skills"],
+                    professional_years=profile_data["professional_years"],
+                    internship_months=profile_data["internship_months"],
+                )
+            except LocalJobAgentError as error:
+                if str(error) in {"local_agent_unavailable", "local_agent_timeout"}:
+                    break
+                continue
+            final = finalize_job_assessment(
+                analysis=analysis,
+                base_score=base.score,
+                professional_years=profile_data["professional_years"],
+                model=agent.model,
+            )
+            values = {
+                "profile_id": profile_id,
+                "candidate_id": candidate.id,
+                "score": final.score,
+                "stars": final.stars,
+                "recommendation": final.recommendation,
+                "confidence": final.confidence,
+                "required_experience_min": final.required_experience_min,
+                "experience_gap": final.experience_gap,
+                "matched_requirements": final.matched_requirements,
+                "missing_requirements": final.missing_requirements,
+                "preferred_requirements": final.preferred_requirements,
+                "hard_blockers": final.hard_blockers,
+                "summary": final.summary,
+                "model": final.model,
+                "prompt_version": final.prompt_version,
+                "job_content_hash": job_hash,
+                "profile_hash": candidate_profile_hash,
+                "updated_at": datetime.now(timezone.utc),
+            }
+            statement = pg_insert(JobCandidateAssessment).values(**values)
+            statement = statement.on_conflict_do_update(
+                constraint="uq_job_candidate_assessments_profile_candidate",
+                set_={
+                    key: value
+                    for key, value in values.items()
+                    if key not in {"profile_id", "candidate_id"}
+                },
+            )
+            with Session(database) as session:
+                session.execute(statement)
+                session.commit()
+            assessed_count += 1
+    finally:
+        agent.close()
+    return assessed_count
+
+
+def load_assessable_browser_candidate_ids(
+    database: Engine,
+    *,
+    limit: int = 100,
+) -> list[UUID]:
+    """Return recent candidates whose visible detail text can be assessed."""
+
+    bounded_limit = max(1, min(limit, 100))
+    with Session(database) as session:
+        return list(
+            session.scalars(
+                select(JobBoardCandidate.id)
+                .where(
+                    JobBoardCandidate.activity_code.in_(
+                        (
+                            "browser_agent_listing_confirmation",
+                            "manual_operator_listing_confirmation",
+                        )
+                    ),
+                    JobBoardCandidate.status != "filtered_out",
+                    JobBoardCandidate.snippet.is_not(None),
+                )
+                .order_by(
+                    JobBoardCandidate.last_seen_at.desc(),
+                    JobBoardCandidate.id.desc(),
+                )
+                .limit(bounded_limit)
+            )
+        )
+
+
+def load_browser_collected_jobs(
+    database: Engine,
+    *,
+    profile_label: str,
+    limit: int,
+    offset: int,
+) -> BrowserCollectedPage:
+    activity_codes = (
+        "browser_agent_listing_confirmation",
+        "manual_operator_listing_confirmation",
+    )
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
+        conditions = (
+            JobBoardCandidate.activity_code.in_(activity_codes),
+            JobBoardCandidate.status != "filtered_out",
+            JobBoardCandidate.external_id.not_in(PLACEHOLDER_JOB_IDENTIFIERS),
+        )
+        total = session.scalar(
+            select(func.count()).select_from(JobBoardCandidate).where(*conditions)
+        ) or 0
+        rows = session.execute(
+            select(
+                JobBoardCandidate,
+                func.coalesce(Company.name, JobBoardCandidate.company_name_raw),
+                JobCandidateAssessment,
+            )
+            .outerjoin(Company, Company.id == JobBoardCandidate.company_id)
+            .outerjoin(
+                JobCandidateAssessment,
+                (
+                    JobCandidateAssessment.candidate_id == JobBoardCandidate.id
+                )
+                & (JobCandidateAssessment.profile_id == profile.id),
+            )
+            .where(*conditions)
+            .order_by(
+                JobBoardCandidate.last_seen_at.desc(),
+                JobBoardCandidate.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        items: list[BrowserCollectedItem] = []
+        for candidate, company_name, assessment in rows:
+            if is_placeholder_job_identifier(candidate.external_id):
+                continue
+            try:
+                title, displayed_company, location = normalize_browser_card_fields(
+                    title=candidate.title,
+                    company_name=company_name or UNKNOWN_EMPLOYER,
+                    location=candidate.location,
+                )
+                listing_url = _validated_listing_url(
+                    provider=candidate.provider,
+                    title=title,
+                    listing_url=candidate.listing_url,
+                )
+            except ValueError:
+                continue
+            items.append(
+                BrowserCollectedItem(
+                    candidate_id=candidate.id,
+                    provider=candidate.provider,
+                    title=title,
+                    company_name=displayed_company,
+                    listing_url=listing_url,
+                    location=location,
+                    work_mode=(
+                        candidate.work_mode
+                        if candidate.work_mode in {
+                            "remote",
+                            "hybrid",
+                            "onsite",
+                            "unknown",
+                        }
+                        else "unknown"
+                    ),
+                    status=candidate.status,
+                    collected_at=candidate.last_seen_at,
+                    assessment_state=(
+                        "ready"
+                        if assessment is not None
+                        else "pending"
+                        if candidate.snippet
+                        else "unavailable"
+                    ),
+                    fit_score=(assessment.score if assessment else None),
+                    fit_stars=(assessment.stars if assessment else None),
+                    fit_recommendation=(
+                        assessment.recommendation if assessment else None
+                    ),
+                    fit_confidence=(assessment.confidence if assessment else None),
+                    required_experience_min=(
+                        assessment.required_experience_min if assessment else None
+                    ),
+                    experience_gap=(
+                        assessment.experience_gap if assessment else None
+                    ),
+                    matched_requirements=(
+                        list(assessment.matched_requirements) if assessment else []
+                    ),
+                    missing_requirements=(
+                        list(assessment.missing_requirements) if assessment else []
+                    ),
+                    preferred_requirements=(
+                        list(assessment.preferred_requirements)
+                        if assessment
+                        else []
+                    ),
+                    hard_blockers=(
+                        list(assessment.hard_blockers) if assessment else []
+                    ),
+                    fit_summary=(assessment.summary if assessment else None),
+                )
+            )
+    return BrowserCollectedPage(
+        total=max(0, total - (len(rows) - len(items))),
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
+
+
+def _quarantine_browser_candidate(
+    candidate: JobBoardCandidate,
+    *,
+    now: datetime,
+    reason: str,
+) -> None:
+    candidate.status = "filtered_out"
+    candidate.activity_state = "unknown"
+    candidate.activity_code = "browser_agent_invalid_listing"
+    candidate.updated_at = now
+    candidate.evidence = [
+        *(candidate.evidence or [])[-19:],
+        {
+            "kind": "browser_agent_quality_rejection",
+            "reason": reason,
+            "checked_at": now.isoformat(),
+        },
+    ]
+
+
+def cleanup_browser_collected_jobs(database: Engine) -> BrowserCleanupResponse:
+    """Repair browser text and quarantine invalid listing records, never delete."""
+
+    activity_codes = (
+        "browser_agent_listing_confirmation",
+        "manual_operator_listing_confirmation",
+    )
+    now = datetime.now(timezone.utc)
+    repaired_count = 0
+    quarantined_count = 0
+    with Session(database) as session:
+        candidates = session.scalars(
+            select(JobBoardCandidate)
+            .where(
+                JobBoardCandidate.activity_code.in_(activity_codes),
+                JobBoardCandidate.status == "needs_review",
+            )
+            .with_for_update()
+        ).all()
+        for candidate in candidates:
+            if is_placeholder_job_identifier(candidate.external_id):
+                _quarantine_browser_candidate(
+                    candidate,
+                    now=now,
+                    reason="placeholder_identifier",
+                )
+                quarantined_count += 1
+                continue
+
+            try:
+                _validated_listing_url(
+                    provider=candidate.provider,
+                    title=candidate.title,
+                    listing_url=candidate.listing_url,
+                )
+            except ValueError:
+                _quarantine_browser_candidate(
+                    candidate,
+                    now=now,
+                    reason="invalid_listing_url",
+                )
+                quarantined_count += 1
+                continue
+
+            try:
+                title, company_name, location = normalize_browser_card_fields(
+                    title=candidate.title,
+                    company_name=candidate.company_name_raw,
+                    location=candidate.location,
+                )
+            except ValueError:
+                _quarantine_browser_candidate(
+                    candidate,
+                    now=now,
+                    reason="invalid_listing_text",
+                )
+                quarantined_count += 1
+                continue
+            if (
+                title != candidate.title
+                or company_name != candidate.company_name_raw
+                or location != candidate.location
+            ):
+                candidate.title = title
+                candidate.company_name_raw = company_name
+                candidate.location = location
+                candidate.updated_at = now
+                candidate.evidence = [
+                    *(candidate.evidence or [])[-19:],
+                    {
+                        "kind": "browser_agent_quality_repair",
+                        "checked_at": now.isoformat(),
+                    },
+                ]
+                repaired_count += 1
+        session.commit()
+    return BrowserCleanupResponse(
+        repaired_count=repaired_count,
+        quarantined_count=quarantined_count,
+    )
 
 
 def _job_application_item(
@@ -1224,6 +2024,7 @@ def _search_run_response(
     allowed_result_keys = {
         "query_count",
         "raw_result_count",
+        "inspected_listing_count",
         "excluded_result_count",
         "matched_candidate_count",
         "candidate_count",
@@ -1259,8 +2060,16 @@ def _search_run_response(
         ("requested_work_modes", {"remote", "hybrid", "onsite"}, 3),
         (
             "requested_sources",
-            {"linkedin", "kariyer", "indeed", "glassdoor", "ats"},
-            5,
+            {
+                "linkedin",
+                "kariyer",
+                "indeed",
+                "glassdoor",
+                "ats",
+                "turkey_tech",
+                "remote_feeds",
+            },
+            7,
         ),
     ):
         values = result.get(key)
@@ -1282,9 +2091,17 @@ def _search_run_response(
     source_diagnostics: list[dict[str, object]] = []
     raw_diagnostics = raw.get("source_diagnostics")
     if isinstance(raw_diagnostics, list):
-        allowed_sources = {"linkedin", "kariyer", "indeed", "glassdoor", "ats"}
+        allowed_sources = {
+            "linkedin",
+            "kariyer",
+            "indeed",
+            "glassdoor",
+            "ats",
+            "turkey_tech",
+            "remote_feeds",
+        }
         allowed_outcomes = {"matched", "filtered", "no_results"}
-        for item in raw_diagnostics[:5]:
+        for item in raw_diagnostics[:7]:
             if not isinstance(item, dict):
                 continue
             source = safe_text(item.get("source"), 20)
@@ -1299,6 +2116,7 @@ def _search_run_response(
                 "query_count",
                 "fallback_query_count",
                 "raw_result_count",
+                "inspected_listing_count",
                 "normalized_result_count",
                 "accepted_count",
             ):
@@ -1333,6 +2151,7 @@ def _search_run_response(
         except (TypeError, ValueError):
             result.pop("max_listing_age_days", None)
     for key, maximum in (
+        ("inspected_listing_count", 10_000),
         ("query_limit", 20),
         ("result_limit_per_query", 10),
     ):
@@ -1442,6 +2261,48 @@ def operator_profiles() -> list[OperatorProfileItem]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "database_unavailable"},
         ) from None
+
+
+@router.patch(
+    "/profiles/{profile_label}/experience",
+    response_model=OperatorProfileItem,
+)
+def operator_update_profile_experience(
+    profile_label: Annotated[str, Path(min_length=1, max_length=100)],
+    request: UpdateProfileExperienceRequest,
+    background_tasks: BackgroundTasks,
+) -> OperatorProfileItem:
+    try:
+        profile = update_profile_experience(
+            engine,
+            profile_label=profile_label,
+            professional_experience_years=(
+                request.professional_experience_years
+            ),
+            internship_months=request.internship_months,
+        )
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "profile_not_found"},
+        )
+    try:
+        candidate_ids = load_assessable_browser_candidate_ids(engine)
+    except SQLAlchemyError:
+        candidate_ids = []
+    if candidate_ids:
+        background_tasks.add_task(
+            assess_browser_candidates,
+            engine,
+            profile_label=profile_label,
+            candidate_ids=candidate_ids,
+        )
+    return profile
 
 
 @router.get("/companies", response_model=OperatorCompanyPage)
@@ -1703,6 +2564,183 @@ def operator_native_search_links(
 
 
 @router.post(
+    "/jobs/manual-import",
+    response_model=ImportManualJobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def operator_import_manual_job(
+    request: ImportManualJobRequest,
+) -> ImportManualJobResponse:
+    try:
+        return import_manual_job_candidate(engine, request)
+    except ValueError as error:
+        error_code = str(error)
+        if error_code not in {"provider_invalid", "manual_job_invalid"}:
+            error_code = "manual_job_invalid"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": error_code},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "manual_job_storage_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/browser-agent/collect",
+    response_model=BrowserCollectResponse,
+)
+def operator_browser_collect(
+    request: BrowserCollectRequest,
+    background_tasks: BackgroundTasks,
+) -> BrowserCollectResponse:
+    try:
+        with Session(engine) as session:
+            profile_exists = session.scalar(
+                select(func.count())
+                .select_from(CandidateProfile)
+                .where(CandidateProfile.label == request.profile)
+            )
+        if not profile_exists:
+            raise ValueError("profile_not_found")
+        providers = request.providers or (
+            [request.provider] if request.provider is not None else []
+        )
+        providers = list(dict.fromkeys(providers))
+        if not providers:
+            raise ValueError("browser_provider_required")
+        collection = collect_browser_jobs(
+            role=request.role,
+            location=request.location,
+            providers=providers,
+            work_modes=request.work_modes,
+            max_results_per_provider=(
+                request.max_results
+                if request.max_results is not None and len(providers) == 1
+                else request.max_results_per_provider
+            ),
+        )
+        imported: list[ImportManualJobResponse] = []
+        assessment_ids: list[UUID] = []
+        skipped_count = 0
+        for item in collection.jobs:
+            try:
+                imported_item = import_manual_job_candidate(
+                    engine,
+                    ImportManualJobRequest(
+                        listing_url=item.listing_url,
+                        title=item.title,
+                        company_name=item.company_name,
+                        location=item.location,
+                        work_mode=item.work_mode,
+                        employment_type="unknown",
+                        description_text=item.description_text,
+                        confirmed_visible=True,
+                    ),
+                    origin="browser_agent",
+                    search_role=request.role,
+                )
+                imported.append(imported_item)
+                if item.description_text:
+                    assessment_ids.append(imported_item.candidate_id)
+            except ValueError:
+                skipped_count += 1
+    except BrowserAgentError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": str(error)},
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_request_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_import_storage_unavailable"},
+        ) from None
+    if assessment_ids:
+        background_tasks.add_task(
+            assess_browser_candidates,
+            engine,
+            profile_label=request.profile,
+            candidate_ids=assessment_ids,
+        )
+    return BrowserCollectResponse(
+        provider=providers[0] if len(providers) == 1 else "multi",
+        providers=providers,
+        collected_count=len(collection.jobs),
+        created_count=sum(1 for item in imported if item.created),
+        updated_count=sum(1 for item in imported if item.changed and not item.created),
+        skipped_count=skipped_count,
+        assessment_queued_count=len(assessment_ids),
+        candidate_ids=[item.candidate_id for item in imported],
+        diagnostics=[
+            BrowserSourceDiagnosticItem(
+                provider=item.provider,
+                label=item.label,
+                outcome=item.outcome,
+                collected_count=item.collected_count,
+                error_code=item.error_code,
+                agent_used=item.agent_used,
+                agent_action_count=item.agent_action_count,
+            )
+            for item in collection.diagnostics
+        ],
+    )
+
+
+@router.get(
+    "/browser-agent/results",
+    response_model=BrowserCollectedPage,
+)
+def operator_browser_results(
+    profile: Annotated[str, Query(min_length=1, max_length=100)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
+) -> BrowserCollectedPage:
+    try:
+        return load_browser_collected_jobs(
+            engine,
+            profile_label=profile,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as error:
+        if str(error) == "profile_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": "profile_not_found"},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_results_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_results_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/browser-agent/results/cleanup",
+    response_model=BrowserCleanupResponse,
+)
+def operator_browser_results_cleanup() -> BrowserCleanupResponse:
+    try:
+        return cleanup_browser_collected_jobs(engine)
+    except (SQLAlchemyError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_cleanup_unavailable"},
+        ) from None
+
+
+@router.post(
     "/search-runs",
     response_model=SearchRunResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -1791,7 +2829,7 @@ def operator_jobs(
     provider: Annotated[str | None, Query()] = None,
     include_unverified: bool = False,
 ) -> OperatorJobPage:
-    if provider is not None and provider not in SUPPORTED_JOB_PROVIDERS:
+    if provider is not None and provider not in MANUAL_JOB_PROVIDERS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"error_code": "provider_invalid"},

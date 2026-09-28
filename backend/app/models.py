@@ -705,6 +705,8 @@ class JobBoardCandidate(Base):
         CheckConstraint(
             "provider IN "
             "('linkedin', 'kariyer', 'indeed', 'glassdoor', "
+            "'techcareer', 'yenibiris', 'secretcv', 'toptalent', "
+            "'weworkremotely', 'remoteok', 'remotive', 'jobicy', "
             "'greenhouse', 'lever', 'ashby')",
             name="ck_job_board_candidates_provider",
         ),
@@ -854,6 +856,117 @@ class JobBoardCandidate(Base):
     operator_viewed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class JobCandidateAssessment(Base):
+    __tablename__ = "job_candidate_assessments"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "candidate_id",
+            name="uq_job_candidate_assessments_profile_candidate",
+        ),
+        CheckConstraint(
+            "score BETWEEN 0 AND 100",
+            name="ck_job_candidate_assessments_score",
+        ),
+        CheckConstraint(
+            "stars BETWEEN 1 AND 5",
+            name="ck_job_candidate_assessments_stars",
+        ),
+        CheckConstraint(
+            "recommendation IN ('strong_apply', 'apply', 'review', 'skip')",
+            name="ck_job_candidate_assessments_recommendation",
+        ),
+        CheckConstraint(
+            "confidence IN ('low', 'medium', 'high')",
+            name="ck_job_candidate_assessments_confidence",
+        ),
+        CheckConstraint(
+            "required_experience_min IS NULL OR "
+            "required_experience_min BETWEEN 0 AND 50",
+            name="ck_job_candidate_assessments_required_experience",
+        ),
+        CheckConstraint(
+            "experience_gap IS NULL OR experience_gap BETWEEN 0 AND 50",
+            name="ck_job_candidate_assessments_experience_gap",
+        ),
+        CheckConstraint(
+            "char_length(job_content_hash) = 64",
+            name="ck_job_candidate_assessments_job_hash",
+        ),
+        CheckConstraint(
+            "char_length(profile_hash) = 64",
+            name="ck_job_candidate_assessments_profile_hash",
+        ),
+        CheckConstraint(
+            "char_length(btrim(summary)) > 0",
+            name="ck_job_candidate_assessments_summary",
+        ),
+        Index(
+            "ix_job_candidate_assessments_profile_score",
+            "profile_id",
+            "score",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_board_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    recommendation: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    required_experience_min: Mapped[int | None] = mapped_column(Integer)
+    experience_gap: Mapped[int | None] = mapped_column(Integer)
+    matched_requirements: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    missing_requirements: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    preferred_requirements: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    hard_blockers: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+        nullable=False,
+    )
+    summary: Mapped[str] = mapped_column(String(1000), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    job_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -1018,6 +1131,10 @@ class CandidateProfile(Base):
             name="ck_candidate_profiles_max_experience",
         ),
         CheckConstraint(
+            "internship_months BETWEEN 0 AND 120",
+            name="ck_candidate_profiles_internship_months",
+        ),
+        CheckConstraint(
             "job_search_last_outcome IS NULL OR "
             "job_search_last_outcome IN "
             "('candidates_found', 'no_results', 'error')",
@@ -1118,6 +1235,12 @@ class CandidateProfile(Base):
         Integer,
         default=3,
         server_default="3",
+        nullable=False,
+    )
+    internship_months: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
         nullable=False,
     )
     remote_allowed: Mapped[bool] = mapped_column(

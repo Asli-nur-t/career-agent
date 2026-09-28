@@ -8,4 +8,5 @@ langgraph>=1.0,<2.0
 defusedxml>=0.7,<1.0
 google-genai
 httpx
+playwright>=1.50,<2.0
 pypdf>=6.19,<7.0

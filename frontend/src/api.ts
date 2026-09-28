@@ -12,6 +12,9 @@ export type Summary = {
 export type Profile = {
   label: string;
   target_roles: string[];
+  skills: string[];
+  professional_experience_years: number;
+  internship_months: number;
   next_search_at: string | null;
   last_search_outcome: string | null;
 };
@@ -210,7 +213,14 @@ export type SearchRunCandidate = {
 
 export type SearchMode = "quick" | "deep";
 export type SearchWorkMode = "remote" | "hybrid" | "onsite";
-export type SearchSource = "linkedin" | "kariyer" | "indeed" | "glassdoor" | "ats";
+export type SearchSource =
+  | "linkedin"
+  | "kariyer"
+  | "indeed"
+  | "glassdoor"
+  | "ats"
+  | "turkey_tech"
+  | "remote_feeds";
 export type NativeSearchSource = SearchSource | "turkey_tech" | "remote_feeds";
 
 export type SearchScope = {
@@ -234,6 +244,98 @@ export type NativeSearchLinksResponse = {
   location: string | null;
   links: NativeSearchLink[];
   unavailable_sources: string[];
+};
+
+export type ManualJobImportRequest = {
+  listing_url: string;
+  title: string;
+  company_name: string;
+  location: string | null;
+  work_mode: "remote" | "hybrid" | "onsite" | "unknown";
+  employment_type: "full_time" | "part_time" | "contract" | "internship" | "temporary" | "unknown";
+  description_text?: string | null;
+  confirmed_visible: true;
+};
+
+export type ManualJobImportResponse = {
+  candidate_id: string;
+  provider: string;
+  listing_url: string;
+  status: string;
+  created: boolean;
+  changed: boolean;
+};
+
+export type BrowserAgentProvider =
+  | "linkedin"
+  | "kariyer"
+  | "indeed"
+  | "glassdoor"
+  | "techcareer"
+  | "yenibiris"
+  | "secretcv"
+  | "toptalent"
+  | "weworkremotely"
+  | "remoteok"
+  | "remotive"
+  | "jobicy";
+
+export type BrowserSourceDiagnostic = {
+  provider: BrowserAgentProvider;
+  label: string;
+  outcome: "collected" | "no_results" | "login_required" | "failed";
+  collected_count: number;
+  error_code: string | null;
+  agent_used: boolean;
+  agent_action_count: number;
+};
+
+export type BrowserCollectResponse = {
+  provider: BrowserAgentProvider | "multi";
+  providers: BrowserAgentProvider[];
+  collected_count: number;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  assessment_queued_count: number;
+  candidate_ids: string[];
+  diagnostics: BrowserSourceDiagnostic[];
+};
+
+export type BrowserCollectedJob = {
+  candidate_id: string;
+  provider: BrowserAgentProvider;
+  title: string;
+  company_name: string;
+  listing_url: string;
+  location: string | null;
+  work_mode: SearchWorkMode | "unknown";
+  status: string;
+  collected_at: string;
+  assessment_state: "ready" | "pending" | "unavailable";
+  fit_score: number | null;
+  fit_stars: number | null;
+  fit_recommendation: string | null;
+  fit_confidence: "low" | "medium" | "high" | null;
+  required_experience_min: number | null;
+  experience_gap: number | null;
+  matched_requirements: string[];
+  missing_requirements: string[];
+  preferred_requirements: string[];
+  hard_blockers: string[];
+  fit_summary: string | null;
+};
+
+export type BrowserCollectedPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: BrowserCollectedJob[];
+};
+
+export type BrowserCleanupResponse = {
+  repaired_count: number;
+  quarantined_count: number;
 };
 
 export type SearchSourceDiagnostic = {
@@ -344,6 +446,25 @@ export function getSummary(token: string): Promise<Summary> {
 
 export function getProfiles(token: string): Promise<Profile[]> {
   return request(token, "/operator/profiles");
+}
+
+export function updateProfileExperience(
+  token: string,
+  profile: string,
+  professionalExperienceYears: number,
+  internshipMonths: number,
+): Promise<Profile> {
+  return request(
+    token,
+    `/operator/profiles/${encodeURIComponent(profile)}/experience`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        professional_experience_years: professionalExperienceYears,
+        internship_months: internshipMonths,
+      }),
+    },
+  );
 }
 
 export function getCompanies(
@@ -486,6 +607,61 @@ export function getNativeSearchLinks(
   return request(token, "/operator/native-search-links", {
     method: "POST",
     body: JSON.stringify({ role, location, sources }),
+  });
+}
+
+export function importManualJob(
+  token: string,
+  payload: ManualJobImportRequest,
+): Promise<ManualJobImportResponse> {
+  return request(token, "/operator/jobs/manual-import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function collectWithBrowserAgent(
+  token: string,
+  profile: string,
+  role: string,
+  location: string | null,
+  providers: BrowserAgentProvider[],
+  workModes: SearchWorkMode[],
+  maxResultsPerProvider = 10,
+): Promise<BrowserCollectResponse> {
+  return request(token, "/operator/browser-agent/collect", {
+    method: "POST",
+    body: JSON.stringify({
+      providers,
+      profile,
+      role,
+      location,
+      work_modes: workModes,
+      max_results_per_provider: maxResultsPerProvider,
+      confirmed_browser_launch: true,
+    }),
+  });
+}
+
+export function getBrowserCollectedJobs(
+  token: string,
+  profile: string,
+  limit = 100,
+  offset = 0,
+): Promise<BrowserCollectedPage> {
+  const query = new URLSearchParams({
+    profile,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request(token, `/operator/browser-agent/results?${query.toString()}`);
+}
+
+export function cleanupBrowserCollectedJobs(
+  token: string,
+): Promise<BrowserCleanupResponse> {
+  return request(token, "/operator/browser-agent/results/cleanup", {
+    method: "POST",
   });
 }
 

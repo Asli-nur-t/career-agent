@@ -2,6 +2,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   ApplicationStatus,
+  BrowserAgentProvider,
+  BrowserCollectedJob,
+  BrowserSourceDiagnostic,
   CompanyDetail,
   CompanyDiscoveryRun,
   CompanyItem,
@@ -28,11 +31,13 @@ import {
   getLatestCompanyDiscoveryRun,
   getJobDetail,
   getApplications,
+  getBrowserCollectedJobs,
   getJobs,
   getProfiles,
   getSummary,
   getLatestProfileSearch,
   getNativeSearchLinks,
+  importManualJob,
   markJobViewed,
   rejectJob,
   rejectCompany,
@@ -41,6 +46,9 @@ import {
   startCompanyDiscoveryRun,
   startProfileSearch,
   updateApplication,
+  updateProfileExperience,
+  collectWithBrowserAgent,
+  cleanupBrowserCollectedJobs,
 } from "./api";
 
 type View = "overview" | "search" | "jobs" | "applications" | "companies";
@@ -150,6 +158,17 @@ function errorMessage(error: unknown): string {
         "Backend üzerinde OPERATOR_API_TOKEN yapılandırılmamış.",
       profile_not_found: "Aday profili bulunamadı.",
       database_unavailable: "Veritabanına şu anda ulaşılamıyor.",
+      provider_invalid: "Bu bağlantının iş sitesi henüz güvenli içe aktarmayı desteklemiyor.",
+      manual_job_invalid: "İlan bağlantısı veya alanlardan biri doğrulanamadı.",
+      manual_job_storage_unavailable: "İlan şu anda kaydedilemedi. Biraz sonra tekrar dene.",
+      browser_agent_not_installed: "Tarayıcı ajanı kurulu değil. Playwright ve Chrome kurulumunu tamamlamalısın.",
+      browser_human_action_required: "Tarayıcı giriş veya güvenlik kontrolünde bekliyor. Açılan Chrome penceresinde işlemi tamamlayıp yeniden dene.",
+      browser_agent_unavailable: "Chrome başlatılamadı veya kaynak sayfa zamanında açılamadı.",
+      browser_no_results: "Tarayıcı ajanı bu kapsamda okunabilir ilan bulamadı.",
+      browser_request_invalid: "Tarayıcı ajanı için rol veya konum geçersiz.",
+      browser_import_storage_unavailable: "Toplanan ilanlar şu anda kaydedilemedi.",
+      browser_results_unavailable: "Toplanan ilanlar şu anda veritabanından okunamadı.",
+      browser_cleanup_unavailable: "Bozuk ilan kayıtları şu anda ayıklanamadı.",
       candidate_data_mismatch: "İlan kanıtı güvenli doğrulamadan geçemedi.",
       search_already_running: "Bu profil için bir arama zaten çalışıyor.",
       search_roles_invalid: "Arama için 1–10 geçerli rol seçmelisin.",
@@ -399,10 +418,16 @@ function SearchResultsModal({ candidates, onClose, onViewed, applicationByCandid
 
 const generalSearchSources: SearchSource[] = [
   "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+  "turkey_tech", "remote_feeds",
 ];
 const nativeSearchSources: NativeSearchSource[] = [
   "linkedin", "kariyer", "indeed", "glassdoor", "ats",
   "turkey_tech", "remote_feeds",
+];
+const browserAgentProviders: BrowserAgentProvider[] = [
+  "linkedin", "kariyer", "indeed", "glassdoor",
+  "techcareer", "yenibiris", "secretcv", "toptalent",
+  "weworkremotely", "remoteok", "remotive", "jobicy",
 ];
 const generalSearchWorkModes: SearchWorkMode[] = [
   "remote", "hybrid", "onsite",
@@ -439,6 +464,8 @@ function GeneralSearchView({
   applicationByCandidate,
   applicationBusy,
   onApplication,
+  onManualImported,
+  onProfileUpdated,
 }: {
   token: string;
   selectedProfile: Profile | null;
@@ -470,6 +497,8 @@ function GeneralSearchView({
   applicationByCandidate: Map<string, JobApplication>;
   applicationBusy: string | null;
   onApplication: (candidateId: string, status: ApplicationStatus) => void;
+  onManualImported: () => Promise<void>;
+  onProfileUpdated: (profile: Profile) => void;
 }) {
   const [resultQuery, setResultQuery] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
@@ -481,6 +510,32 @@ function GeneralSearchView({
   const [nativeUnavailable, setNativeUnavailable] = useState<string[]>([]);
   const [nativeLoading, setNativeLoading] = useState(false);
   const [nativeError, setNativeError] = useState<string | null>(null);
+  const [manualUrl, setManualUrl] = useState("");
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualCompany, setManualCompany] = useState("");
+  const [manualLocation, setManualLocation] = useState("");
+  const [manualWorkMode, setManualWorkMode] = useState<"remote" | "hybrid" | "onsite" | "unknown">("unknown");
+  const [manualConfirmed, setManualConfirmed] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualMessage, setManualMessage] = useState<string | null>(null);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserMessage, setBrowserMessage] = useState<string | null>(null);
+  const [browserError, setBrowserError] = useState<string | null>(null);
+  const [selectedBrowserProviders, setSelectedBrowserProviders] = useState<BrowserAgentProvider[]>(browserAgentProviders);
+  const [browserDiagnostics, setBrowserDiagnostics] = useState<BrowserSourceDiagnostic[]>([]);
+  const [browserCollected, setBrowserCollected] = useState<BrowserCollectedJob[]>([]);
+  const [browserCollectedTotal, setBrowserCollectedTotal] = useState(0);
+  const [browserResultsError, setBrowserResultsError] = useState<string | null>(null);
+  const [browserCleanupBusy, setBrowserCleanupBusy] = useState(false);
+  const [professionalYears, setProfessionalYears] = useState(
+    selectedProfile?.professional_experience_years ?? 0,
+  );
+  const [internshipMonths, setInternshipMonths] = useState(
+    selectedProfile?.internship_months ?? 0,
+  );
+  const [experienceBusy, setExperienceBusy] = useState(false);
+  const [experienceMessage, setExperienceMessage] = useState<string | null>(null);
   const candidates = run?.result.matched_candidates ?? [];
   const sourceDiagnostics = run?.result.source_diagnostics ?? [];
   const providers = useMemo(
@@ -503,6 +558,75 @@ function GeneralSearchView({
         .some((value) => value.toLocaleLowerCase("tr-TR").includes(query));
     });
   }, [candidates, dispositionFilter, providerFilter, resultQuery, viewFilter]);
+
+  const refreshBrowserCollected = useCallback(async () => {
+    if (!selectedProfile) {
+      setBrowserCollected([]);
+      setBrowserCollectedTotal(0);
+      return;
+    }
+    try {
+      const response = await getBrowserCollectedJobs(
+        token,
+        selectedProfile.label,
+        100,
+        0,
+      );
+      setBrowserCollected(response.items);
+      setBrowserCollectedTotal(response.total);
+      setBrowserResultsError(null);
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    }
+  }, [selectedProfile, token]);
+
+  useEffect(() => {
+    setProfessionalYears(selectedProfile?.professional_experience_years ?? 0);
+    setInternshipMonths(selectedProfile?.internship_months ?? 0);
+    setExperienceMessage(null);
+  }, [selectedProfile]);
+
+  async function saveExperienceProfile() {
+    if (!selectedProfile || experienceBusy) return;
+    setExperienceBusy(true);
+    setExperienceMessage(null);
+    try {
+      const updated = await updateProfileExperience(
+        token,
+        selectedProfile.label,
+        professionalYears,
+        internshipMonths,
+      );
+      onProfileUpdated(updated);
+      setBrowserCollected([]);
+      await refreshBrowserCollected();
+      setExperienceMessage("Deneyim profili kaydedildi; eski ajan puanları yenilenecek.");
+    } catch (caught) {
+      setExperienceMessage(errorMessage(caught));
+    } finally {
+      setExperienceBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshBrowserCollected();
+  }, [refreshBrowserCollected]);
+
+  async function cleanupBrowserResults() {
+    if (browserCleanupBusy) return;
+    if (!window.confirm("Bozuk kart metinleri onarılsın ve örnek/sahte bağlantılar karantinaya alınsın mı? Hiçbir kayıt silinmez.")) return;
+    setBrowserCleanupBusy(true);
+    setBrowserResultsError(null);
+    try {
+      const result = await cleanupBrowserCollectedJobs(token);
+      await refreshBrowserCollected();
+      setBrowserMessage(`${result.repaired_count} kayıt düzeltildi; ${result.quarantined_count} geçersiz kayıt karantinaya alındı.`);
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setBrowserCleanupBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!roles.includes(nativeRole)) setNativeRole(roles[0] ?? "");
@@ -540,6 +664,72 @@ function GeneralSearchView({
     }
   }
 
+  async function submitManualJob(event: FormEvent) {
+    event.preventDefault();
+    if (manualBusy || !manualConfirmed) return;
+    setManualBusy(true);
+    setManualError(null);
+    setManualMessage(null);
+    try {
+      const result = await importManualJob(token, {
+        listing_url: manualUrl.trim(),
+        title: manualTitle.trim(),
+        company_name: manualCompany.trim(),
+        location: manualLocation.trim() || null,
+        work_mode: manualWorkMode,
+        employment_type: "unknown",
+        confirmed_visible: true,
+      });
+      await onManualImported();
+      setManualMessage(result.created ? "İlan inceleme kuyruğuna eklendi." : result.changed ? "Mevcut ilan güncellendi." : "İlan daha önce karara bağlanmış; mevcut kayıt korundu.");
+      setManualUrl("");
+      setManualTitle("");
+      setManualCompany("");
+      setManualConfirmed(false);
+    } catch (caught) {
+      setManualError(errorMessage(caught));
+    } finally {
+      setManualBusy(false);
+    }
+  }
+
+  async function runBrowserAgent() {
+    if (!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0) return;
+    setBrowserBusy(true);
+    setBrowserError(null);
+    setBrowserMessage(null);
+    setBrowserDiagnostics([]);
+    try {
+      const result = await collectWithBrowserAgent(
+        token,
+        selectedProfile.label,
+        nativeRole,
+        nativeLocation || null,
+        selectedBrowserProviders,
+        workModes,
+      );
+      await onManualImported();
+      await refreshBrowserCollected();
+      setBrowserDiagnostics(result.diagnostics);
+      const loginCount = result.diagnostics.filter((item) => item.outcome === "login_required").length;
+      const failedCount = result.diagnostics.filter((item) => item.outcome === "failed").length;
+      const suffix = [
+        loginCount ? `${loginCount} kaynak giriş istedi` : "",
+        failedCount ? `${failedCount} kaynak açılamadı` : "",
+      ].filter(Boolean).join("; ");
+      const agentSources = result.diagnostics.filter((item) => item.agent_used).length;
+      setBrowserMessage(`${result.collected_count} ilan okundu; ${result.created_count} yeni kayıt eklendi, ${result.updated_count} kayıt güncellendi; ${agentSources} kaynakta yerel ajan çalıştı; ${result.assessment_queued_count} ilan uygunluk değerlendirmesine alındı${suffix ? `; ${suffix}` : ""}.`);
+      if (result.assessment_queued_count > 0) {
+        window.setTimeout(() => { void refreshBrowserCollected(); }, 4_000);
+        window.setTimeout(() => { void refreshBrowserCollected(); }, 12_000);
+      }
+    } catch (caught) {
+      setBrowserError(errorMessage(caught));
+    } finally {
+      setBrowserBusy(false);
+    }
+  }
+
   return (
     <div className="general-search-page">
       <section className="panel search-builder-panel">
@@ -553,6 +743,42 @@ function GeneralSearchView({
             {run ? label(run.status) : "Hazır"}
           </div>
         </div>
+
+        {selectedProfile && (
+          <section className="agent-profile-card">
+            <div>
+              <p className="eyebrow">AJAN DEĞERLENDİRME PROFİLİ</p>
+              <h3>Deneyim bilgisini doğrula</h3>
+              <p>CV becerileri korunur; yerel ajan deneyim açığını bu iki ayrı değerle değerlendirir.</p>
+            </div>
+            <label>
+              Profesyonel deneyim (yıl)
+              <input
+                type="number"
+                min={0}
+                max={50}
+                step={1}
+                value={professionalYears}
+                onChange={(event) => setProfessionalYears(Math.max(0, Math.min(50, Number(event.target.value))))}
+              />
+            </label>
+            <label>
+              Staj deneyimi (ay)
+              <input
+                type="number"
+                min={0}
+                max={120}
+                step={1}
+                value={internshipMonths}
+                onChange={(event) => setInternshipMonths(Math.max(0, Math.min(120, Number(event.target.value))))}
+              />
+            </label>
+            <button className="ghost" type="button" disabled={experienceBusy} onClick={() => { void saveExperienceProfile(); }}>
+              {experienceBusy ? "Kaydediliyor…" : "Deneyimi kaydet"}
+            </button>
+            {experienceMessage && <small>{experienceMessage}</small>}
+          </section>
+        )}
 
         <div className="search-builder-grid">
           <section className="search-control-block role-control-block">
@@ -593,7 +819,7 @@ function GeneralSearchView({
           </section>
 
           <section className="search-control-block">
-            <div className="control-title"><strong>3. Kaynaklar</strong><span>{sources.length}/5</span></div>
+            <div className="control-title"><strong>3. Kaynaklar</strong><span>{sources.length}/{generalSearchSources.length}</span></div>
             <p>Her kaynak ayrı sorgulanır; böylece tek bir platform sonuçları bastırmaz.</p>
             <div className="choice-row source-choices">
               {generalSearchSources.map((source) => (
@@ -627,6 +853,106 @@ function GeneralSearchView({
           </button>
         </div>
         {running && <div className="search-progress"><i /></div>}
+
+        <section className="browser-agent-panel">
+          <div>
+            <p className="eyebrow">YEREL TARAYICI AJANI</p>
+            <h3>Seçili iş sitelerini görünür tarayıcıda tara</h3>
+            <p>Ajan kaynakların kendi arama sayfalarını açar, görünen ilan kartlarını okur ve doğrulanan bağlantıları inceleme kuyruğuna ekler. Bir kaynak giriş isterse diğerleri çalışmaya devam eder.</p>
+          </div>
+          <div className="browser-agent-controls">
+            <label>Rol<select value={nativeRole} onChange={(event) => setNativeRole(event.target.value)}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+            <label>Konum<select value={nativeLocation} onChange={(event) => setNativeLocation(event.target.value)}><option value="">Kaynak varsayılanı</option>{locations.map((location) => <option key={location} value={location}>{location}</option>)}</select></label>
+            <span>
+              <b>Çalışma biçimi</b>
+              {workModes.length ? workModes.map((mode) => label(mode)).join(" · ") : "Seçilmedi"}
+              <small>Kaynak başına en fazla 10 ilan</small>
+            </span>
+          </div>
+          <div className="browser-source-picker" aria-label="Tarayıcı ajanı kaynakları">
+            {browserAgentProviders.map((provider) => {
+              const selected = selectedBrowserProviders.includes(provider);
+              return (
+                <button
+                  type="button"
+                  className={selected ? "selected" : ""}
+                  key={provider}
+                  onClick={() => setSelectedBrowserProviders((current) => selected ? current.filter((item) => item !== provider) : [...current, provider])}
+                >
+                  {label(provider)}
+                </button>
+              );
+            })}
+          </div>
+          <div className="browser-agent-actions">
+            <div>{browserError && <span className="native-search-error">{browserError}</span>}{browserMessage && <span className="manual-job-success">{browserMessage}</span>}</div>
+            <button className="primary" type="button" disabled={!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0 || workModes.length === 0} onClick={() => { void runBrowserAgent(); }}>{browserBusy ? "Kaynaklar sırayla taranıyor…" : `${selectedBrowserProviders.length} kaynağı ajanla tara`}</button>
+          </div>
+          {browserDiagnostics.length > 0 && (
+            <div className="browser-diagnostics">
+              {browserDiagnostics.map((item) => (
+                <div className={item.outcome} key={item.provider}>
+                  <b>{item.label}</b>
+                  <span>{item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
+                  <small>{item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
+                </div>
+              ))}
+            </div>
+          )}
+          <small>Uzaktan ilanlarda şehir zorunlu değildir; hibrit ve iş yerinde ilanlar seçilen şehirle eşleşmelidir. Konumu veya çalışma biçimi doğrulanamayan kart kaydedilmez. Ajan CAPTCHA veya giriş kontrolünü aşmaz; giriş isteyen kaynağı raporlayıp diğerlerine geçer.</small>
+          <div className="browser-collected-head">
+            <div>
+              <b>Toplanan ilanlar</b>
+              <span>{browserCollectedTotal} kalıcı kayıt · en yeni 100 kayıt gösteriliyor</span>
+            </div>
+            <div className="browser-collected-tools">
+              <button className="ghost" type="button" disabled={browserCleanupBusy} onClick={() => { void cleanupBrowserResults(); }}>{browserCleanupBusy ? "Ayıklanıyor…" : "Bozukları ayıkla"}</button>
+              <button className="ghost" type="button" onClick={() => { void refreshBrowserCollected(); }}>Yenile</button>
+            </div>
+          </div>
+          {browserResultsError && <p className="native-search-error">{browserResultsError}</p>}
+          {browserCollected.length > 0 ? (
+            <div className="browser-collected-list">
+              {browserCollected.map((item) => (
+                <article key={item.candidate_id}>
+                  <div className="browser-collected-provider">{label(item.provider)}</div>
+                  <div className="browser-collected-copy">
+                    <b>{item.title}</b>
+                    <span>{item.company_name}{item.location ? ` · ${item.location}` : ""} · {label(item.work_mode)}</span>
+                    {item.fit_summary && <p>{item.fit_summary}</p>}
+                    {item.assessment_state === "ready" && (
+                      <details className="agent-fit-details">
+                        <summary>Gereksinim karşılaştırmasını göster</summary>
+                        {item.required_experience_min !== null && (
+                          <span>İstenen deneyim: en az {item.required_experience_min} yıl{item.experience_gap ? ` · ${item.experience_gap} yıl açık` : " · deneyim uyuyor"}</span>
+                        )}
+                        {item.matched_requirements.length > 0 && <span><b>Eşleşen:</b> {item.matched_requirements.join(" · ")}</span>}
+                        {item.missing_requirements.length > 0 && <span><b>Eksik:</b> {item.missing_requirements.join(" · ")}</span>}
+                        {item.preferred_requirements.length > 0 && <span><b>Tercih edilen:</b> {item.preferred_requirements.join(" · ")}</span>}
+                        {item.hard_blockers.length > 0 && <span><b>Engel:</b> {item.hard_blockers.join(" · ")}</span>}
+                      </details>
+                    )}
+                  </div>
+                  <div className="browser-collected-actions">
+                    {item.assessment_state === "ready" ? (
+                      <div className={`agent-fit-score ${item.fit_recommendation ?? "review"}`}>
+                        <strong>{item.fit_score}</strong>
+                        <span aria-label={`${item.fit_stars} yıldız`}>{"★".repeat(item.fit_stars ?? 0)}{"☆".repeat(5 - (item.fit_stars ?? 0))}</span>
+                        <small>{label(item.fit_recommendation ?? "review")} · {label(item.fit_confidence ?? "low")}</small>
+                      </div>
+                    ) : (
+                      <small>{item.assessment_state === "pending" ? "Yerel ajan değerlendirmesi bekleniyor" : "İlan metni okunamadı"}</small>
+                    )}
+                    <small>{label(item.status)}</small>
+                    <a href={item.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(item.candidate_id)}>İlanı aç ↗</a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : !browserResultsError ? (
+            <p className="browser-collected-empty">Henüz toplanmış ilan yok.</p>
+          ) : null}
+        </section>
 
         <section className="native-search-panel">
           <div className="native-search-copy">
@@ -666,6 +992,24 @@ function GeneralSearchView({
               ))}
             </div>
           )}
+          <form className="manual-job-import" onSubmit={submitManualJob}>
+            <div className="manual-job-heading">
+              <div><strong>Bulduğun ilanı kuyruğa ekle</strong><span>İlan sayfasındaki bilgileri kopyala; yalnızca desteklenen kaynak bağlantıları kabul edilir.</span></div>
+              <span>İnsan doğrulamalı</span>
+            </div>
+            <div className="manual-job-grid">
+              <label className="wide">İlan bağlantısı<input type="url" required maxLength={2048} value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://…" /></label>
+              <label>İlan başlığı<input required maxLength={300} value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} /></label>
+              <label>Şirket<input required maxLength={500} value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} /></label>
+              <label>Konum<input maxLength={500} value={manualLocation} onChange={(event) => setManualLocation(event.target.value)} placeholder="İsteğe bağlı" /></label>
+              <label>Çalışma biçimi<select value={manualWorkMode} onChange={(event) => setManualWorkMode(event.target.value as typeof manualWorkMode)}><option value="unknown">Belirsiz</option><option value="remote">Uzaktan</option><option value="hybrid">Hibrit</option><option value="onsite">İş yerinde</option></select></label>
+            </div>
+            <label className="manual-confirm"><input type="checkbox" checked={manualConfirmed} onChange={(event) => setManualConfirmed(event.target.checked)} /><span>İlan sayfasını açtım ve ilanın şu anda görünür olduğunu doğruladım.</span></label>
+            <div className="manual-job-actions">
+              <div>{manualError && <span className="native-search-error">{manualError}</span>}{manualMessage && <span className="manual-job-success">{manualMessage}</span>}</div>
+              <button className="primary" type="submit" disabled={manualBusy || !manualConfirmed || !manualUrl.trim() || !manualTitle.trim() || !manualCompany.trim()}>{manualBusy ? "Ekleniyor…" : "İnceleme kuyruğuna ekle"}</button>
+            </div>
+          </form>
         </section>
       </section>
 
@@ -1410,9 +1754,9 @@ export default function App() {
   const [searchWorkModes, setSearchWorkModes] = useState<SearchWorkMode[]>([
     "remote", "hybrid", "onsite",
   ]);
-  const [searchSources, setSearchSources] = useState<SearchSource[]>([
-    "linkedin", "kariyer", "indeed", "glassdoor", "ats",
-  ]);
+  const [searchSources, setSearchSources] = useState<SearchSource[]>(
+    generalSearchSources,
+  );
   const [maxAgeDays, setMaxAgeDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1817,6 +2161,8 @@ export default function App() {
             applicationByCandidate={applicationByCandidate}
             applicationBusy={applicationBusy}
             onApplication={(candidateId, status) => { void changeApplication(candidateId, status); }}
+            onManualImported={() => refreshBase(token)}
+            onProfileUpdated={(updated) => setProfiles((current) => current.map((item) => item.label === updated.label ? updated : item))}
           />
         ) : view === "jobs" ? (
           <div className="jobs-layout">
