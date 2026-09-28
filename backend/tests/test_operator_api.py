@@ -627,7 +627,8 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
         "remote", "hybrid", "onsite"
     ]
     assert queue.call_args.kwargs["requested_sources"] == [
-        "linkedin", "kariyer", "indeed", "glassdoor", "ats"
+        "linkedin", "kariyer", "indeed", "glassdoor", "ats",
+        "turkey_tech", "remote_feeds",
     ]
     assert queue.call_args.kwargs["max_listing_age_days"] == 30
     assert queue.call_args.kwargs["force"] is False
