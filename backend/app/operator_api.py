@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -574,6 +574,22 @@ class BrowserCollectedPage(BaseModel):
 class BrowserCleanupResponse(BaseModel):
     repaired_count: int
     quarantined_count: int
+
+
+class BrowserStaleCleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+    older_than_days: int = Field(default=7, ge=1, le=365)
+    limit: int = Field(default=500, ge=1, le=2_000)
+    apply: bool = False
+    confirmed_cleanup: bool = False
+
+
+class BrowserStaleCleanupResponse(BaseModel):
+    matched_count: int
+    quarantined_count: int
+    applied: bool
 
 
 class BrowserResultProfileRequest(BaseModel):
@@ -1827,6 +1843,77 @@ def cleanup_browser_collected_jobs(database: Engine) -> BrowserCleanupResponse:
     )
 
 
+def cleanup_stale_unassessed_browser_jobs(
+    database: Engine,
+    *,
+    profile_label: str,
+    older_than_days: int,
+    limit: int,
+    apply: bool,
+    confirmed_cleanup: bool,
+) -> BrowserStaleCleanupResponse:
+    """Preview or quarantine unusable old records without deleting history."""
+
+    if apply and not confirmed_cleanup:
+        raise ValueError("cleanup_confirmation_required")
+
+    bounded_limit = max(1, min(limit, 2_000))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    activity_codes = (
+        "browser_agent_listing_confirmation",
+        "manual_operator_listing_confirmation",
+    )
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
+
+        has_assessment = select(JobCandidateAssessment.id).where(
+            JobCandidateAssessment.candidate_id == JobBoardCandidate.id
+        ).exists()
+        has_application = select(JobApplication.id).where(
+            JobApplication.candidate_id == JobBoardCandidate.id
+        ).exists()
+        statement = (
+            select(JobBoardCandidate)
+            .where(
+                JobBoardCandidate.activity_code.in_(activity_codes),
+                JobBoardCandidate.status == "needs_review",
+                JobBoardCandidate.last_seen_at < cutoff,
+                JobBoardCandidate.operator_viewed_at.is_(None),
+                or_(
+                    JobBoardCandidate.snippet.is_(None),
+                    func.length(func.btrim(JobBoardCandidate.snippet)) < 100,
+                ),
+                ~has_assessment,
+                ~has_application,
+            )
+            .order_by(JobBoardCandidate.last_seen_at.asc())
+            .limit(bounded_limit)
+        )
+        if apply:
+            statement = statement.with_for_update()
+        candidates = list(session.scalars(statement))
+
+        if apply:
+            now = datetime.now(timezone.utc)
+            for candidate in candidates:
+                _quarantine_browser_candidate(
+                    candidate,
+                    now=now,
+                    reason="stale_unassessed_insufficient_description",
+                )
+            session.commit()
+
+    return BrowserStaleCleanupResponse(
+        matched_count=len(candidates),
+        quarantined_count=(len(candidates) if apply else 0),
+        applied=apply,
+    )
+
+
 def _job_application_item(
     application: JobApplication,
     candidate: JobBoardCandidate,
@@ -2899,6 +2986,45 @@ def operator_browser_results_cleanup() -> BrowserCleanupResponse:
     try:
         return cleanup_browser_collected_jobs(engine)
     except (SQLAlchemyError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_cleanup_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/browser-agent/results/stale-cleanup",
+    response_model=BrowserStaleCleanupResponse,
+)
+def operator_browser_stale_results_cleanup(
+    request: BrowserStaleCleanupRequest,
+) -> BrowserStaleCleanupResponse:
+    try:
+        return cleanup_stale_unassessed_browser_jobs(
+            engine,
+            profile_label=request.profile,
+            older_than_days=request.older_than_days,
+            limit=request.limit,
+            apply=request.apply,
+            confirmed_cleanup=request.confirmed_cleanup,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code == "profile_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": code},
+            ) from None
+        if code == "cleanup_confirmation_required":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error_code": code},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_stale_cleanup_invalid"},
+        ) from None
+    except SQLAlchemyError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": "browser_cleanup_unavailable"},

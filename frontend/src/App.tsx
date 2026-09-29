@@ -49,6 +49,7 @@ import {
   updateProfileExperience,
   collectWithBrowserAgent,
   cleanupBrowserCollectedJobs,
+  cleanupStaleBrowserCollectedJobs,
   dismissBrowserCollectedJob,
   restoreBrowserCollectedJob,
 } from "./api";
@@ -721,6 +722,38 @@ function GeneralSearchView({
     }
   }
 
+  async function cleanupStaleBrowserResults() {
+    if (!selectedProfile || browserCleanupBusy) return;
+    setBrowserCleanupBusy(true);
+    setBrowserResultsError(null);
+    try {
+      const preview = await cleanupStaleBrowserCollectedJobs(
+        token,
+        selectedProfile.label,
+        false,
+      );
+      if (preview.matched_count === 0) {
+        setBrowserMessage("Yedi günden eski, açıklaması yetersiz ve korunması gereken işlemi olmayan kayıt bulunamadı.");
+        return;
+      }
+      const confirmed = window.confirm(
+        `${preview.matched_count} eski kayıt listeden kaldırılacak. Yalnızca ajan değerlendirmesi, görüntülenme veya başvuru kaydı olmayan ve açıklaması 100 karakterden kısa ilanlar etkilenecek. Devam edilsin mi?`,
+      );
+      if (!confirmed) return;
+      const result = await cleanupStaleBrowserCollectedJobs(
+        token,
+        selectedProfile.label,
+        true,
+      );
+      await refreshBrowserCollected();
+      setBrowserMessage(`${result.quarantined_count} eski ve değerlendirilemeyen kayıt güvenli biçimde listeden kaldırıldı.`);
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setBrowserCleanupBusy(false);
+    }
+  }
+
   async function dismissBrowserResult(item: BrowserCollectedJob) {
     if (!selectedProfile || browserDismissBusy) return;
     if (!window.confirm(`“${item.title}” bu profilin toplanmış ilan listesinden gizlensin mi? Başvuru geçmişi ve ilan kaydı silinmez.`)) return;
@@ -820,6 +853,10 @@ function GeneralSearchView({
 
   async function runBrowserAgent() {
     if (!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0) return;
+    const sourceNames = selectedBrowserProviders.map((provider) => label(provider)).join(", ");
+    if (!window.confirm(
+      `Görünür tarayıcı açılarak ${sourceNames} kaynaklarında “${nativeRole}” aranacak. Siteler dış istekleri görebilir ve gerekirse giriş/CAPTCHA işlemini senin tamamlaman gerekir. Tarama başlatılsın mı?`,
+    )) return;
     setBrowserBusy(true);
     setBrowserError(null);
     setBrowserMessage(null);
@@ -1036,6 +1073,7 @@ function GeneralSearchView({
             </div>
             <div className="browser-collected-tools">
               <button className="ghost" type="button" disabled={browserCleanupBusy} onClick={() => { void cleanupBrowserResults(); }}>{browserCleanupBusy ? "Ayıklanıyor…" : "Bozukları ayıkla"}</button>
+              <button className="ghost" type="button" disabled={browserCleanupBusy || !selectedProfile} onClick={() => { void cleanupStaleBrowserResults(); }}>Eski eksikleri kaldır</button>
               <button className="ghost" type="button" onClick={() => { void refreshBrowserCollected(); }}>Yenile</button>
             </div>
           </div>

@@ -124,6 +124,15 @@ Aranabilir rol seçenekleri CV profilindeki birincil, ikincil ve üçüncül rol
 yanında sık kullanılan teknoloji ve analist rollerini içerir; yine en fazla 10
 rol gerçekten taramaya gönderilir.
 
+Tarayıcı ajanı yalnızca operatörün ekrandaki açık onayından sonra başlatılır.
+“Eski eksikleri kaldır” işlemi önce etkilenecek kayıt sayısını gösterir ve
+ikinci bir onay ister. Yedi günden eski, açıklaması 100 karakterden kısa,
+görüntülenmemiş, hiçbir profil için Ollama değerlendirmesi ve başvuru kaydı
+olmayan kayıtlar fiziksel olarak silinmez; `filtered_out` durumuna alınarak
+geçmiş korunur. İnceleme kuyruğu varsa kalıcı Ollama değerlendirmesini,
+yoksa deterministik puanı kullanır. Kapalı veya konum/politika dışı bir ilanı
+model puanı yeniden başvurulabilir hale getiremez.
+
 ```dotenv
 LOCAL_JOB_AGENT_ENABLED=true
 OLLAMA_AGENT_MODEL=qwen3:8b

@@ -20,9 +20,11 @@ from app.operator_api import (
     BrowserCollectedItem,
     BrowserCollectedPage,
     BrowserResultDismissResponse,
+    BrowserStaleCleanupResponse,
     ImportManualJobResponse,
     _candidate_search_roles,
     cleanup_browser_collected_jobs,
+    cleanup_stale_unassessed_browser_jobs,
 )
 
 
@@ -340,3 +342,93 @@ def test_browser_cleanup_repairs_text_and_quarantines_fixture_without_delete() -
     assert navigation_page.evidence[-1]["reason"] == "invalid_listing_url"
     session.delete.assert_not_called()
     session.commit.assert_called_once()
+
+
+def test_stale_cleanup_requires_preview_then_explicit_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    preview = BrowserStaleCleanupResponse(
+        matched_count=4,
+        quarantined_count=0,
+        applied=False,
+    )
+    applied = BrowserStaleCleanupResponse(
+        matched_count=4,
+        quarantined_count=4,
+        applied=True,
+    )
+    with patch(
+        "app.operator_api.cleanup_stale_unassessed_browser_jobs",
+        side_effect=[preview, applied],
+    ) as cleanup:
+        preview_response = _client().post(
+            "/operator/browser-agent/results/stale-cleanup",
+            headers=_headers(),
+            json={"profile": "aslinur-default", "apply": False},
+        )
+        apply_response = _client().post(
+            "/operator/browser-agent/results/stale-cleanup",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "apply": True,
+                "confirmed_cleanup": True,
+            },
+        )
+
+    assert preview_response.status_code == 200
+    assert preview_response.json()["matched_count"] == 4
+    assert apply_response.status_code == 200
+    assert apply_response.json()["quarantined_count"] == 4
+    assert cleanup.call_args_list[0].kwargs["apply"] is False
+    assert cleanup.call_args_list[1].kwargs["confirmed_cleanup"] is True
+
+
+def test_stale_cleanup_quarantines_instead_of_deleting() -> None:
+    candidate = SimpleNamespace(
+        status="needs_review",
+        activity_state="unknown",
+        activity_code="browser_agent_listing_confirmation",
+        updated_at=None,
+        evidence=[],
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = SimpleNamespace(id=uuid4())
+    session.scalars.return_value.__iter__.return_value = iter([candidate])
+
+    with patch("app.operator_api.Session", return_value=session):
+        result = cleanup_stale_unassessed_browser_jobs(
+            MagicMock(),
+            profile_label="aslinur-default",
+            older_than_days=7,
+            limit=500,
+            apply=True,
+            confirmed_cleanup=True,
+        )
+
+    assert result.matched_count == 1
+    assert result.quarantined_count == 1
+    assert candidate.status == "filtered_out"
+    assert candidate.evidence[-1]["reason"] == (
+        "stale_unassessed_insufficient_description"
+    )
+    session.delete.assert_not_called()
+    session.commit.assert_called_once()
+
+
+def test_stale_cleanup_refuses_unconfirmed_apply() -> None:
+    with patch("app.operator_api.Session") as session_factory:
+        try:
+            cleanup_stale_unassessed_browser_jobs(
+                MagicMock(),
+                profile_label="aslinur-default",
+                older_than_days=7,
+                limit=500,
+                apply=True,
+                confirmed_cleanup=False,
+            )
+        except ValueError as error:
+            assert str(error) == "cleanup_confirmation_required"
+        else:
+            raise AssertionError("unconfirmed cleanup unexpectedly succeeded")
+    session_factory.assert_not_called()

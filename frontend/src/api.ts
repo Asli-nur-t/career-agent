@@ -197,6 +197,12 @@ export type JobApplicationPage = {
   items: JobApplication[];
 };
 
+export type BrowserStaleCleanupResponse = {
+  matched_count: number;
+  quarantined_count: number;
+  applied: boolean;
+};
+
 export type SearchRunCandidate = {
   candidate_id: string;
   provider: string;
@@ -677,6 +683,23 @@ export function cleanupBrowserCollectedJobs(
 ): Promise<BrowserCleanupResponse> {
   return request(token, "/operator/browser-agent/results/cleanup", {
     method: "POST",
+  });
+}
+
+export function cleanupStaleBrowserCollectedJobs(
+  token: string,
+  profile: string,
+  apply = false,
+): Promise<BrowserStaleCleanupResponse> {
+  return request(token, "/operator/browser-agent/results/stale-cleanup", {
+    method: "POST",
+    body: JSON.stringify({
+      profile,
+      older_than_days: 7,
+      limit: 500,
+      apply,
+      confirmed_cleanup: apply,
+    }),
   });
 }
 

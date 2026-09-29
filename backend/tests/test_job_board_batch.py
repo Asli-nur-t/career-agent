@@ -1,13 +1,13 @@
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from app.audit_job_board_candidates import audit_candidates
 from app.discover_job_board_jobs import due_companies, record_job_board_scan
 from app.job_boards import UNKNOWN_EMPLOYER
 from app.matching import CandidateProfileSpec
-from app.review_job_board_queue import _to_spec, rank_candidate
+from app.review_job_board_queue import _to_spec, load_queue, rank_candidate
 
 
 def test_due_companies_use_verified_brand() -> None:
@@ -229,6 +229,126 @@ def test_current_structured_expiry_is_page_verification() -> None:
     )
 
     assert "activity_unverified" not in item.risk_flags
+
+
+def _stored_profile_for_queue() -> tuple[SimpleNamespace, CandidateProfileSpec]:
+    spec = CandidateProfileSpec(
+        label="test",
+        target_roles=["AI Engineer"],
+        skills=["Python"],
+        allowed_work_modes=["remote", "hybrid", "onsite"],
+    )
+    stored = SimpleNamespace(
+        id=uuid4(),
+        label=spec.label,
+        target_roles=spec.target_roles,
+        secondary_roles=spec.secondary_roles,
+        tertiary_roles=spec.tertiary_roles,
+        skills=spec.skills,
+        preferred_locations=spec.preferred_locations,
+        preferred_remote_locations=spec.preferred_remote_locations,
+        excluded_locations=spec.excluded_locations,
+        allowed_work_modes=spec.allowed_work_modes,
+        location_filter_mode=spec.location_filter_mode,
+        max_listing_age_days=spec.max_listing_age_days,
+        excluded_keywords=spec.excluded_keywords,
+        max_years_experience=spec.max_years_experience,
+        remote_allowed=spec.remote_allowed,
+        config_hash=spec.config_hash(),
+    )
+    return stored, spec
+
+
+def test_queue_prefers_persistent_agent_assessment() -> None:
+    stored, _ = _stored_profile_for_queue()
+    candidate = SimpleNamespace(
+        id=uuid4(),
+        provider="linkedin",
+        company_id=None,
+        company_name_raw="Acme",
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python role",
+        location="İstanbul",
+        work_mode="hybrid",
+        employment_type="full_time",
+        published_at=None,
+        activity_state="active",
+        activity_code="linkedin_active_marker",
+        operator_viewed_at=None,
+        last_seen_at=None,
+        status="needs_review",
+    )
+    assessment = SimpleNamespace(
+        score=91,
+        recommendation="strong_apply",
+        matched_requirements=["Python", "AI Engineer"],
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = stored
+    session.execute.return_value.all.return_value = [
+        (candidate, "Acme", assessment)
+    ]
+
+    with patch("app.review_job_board_queue.Session", return_value=session):
+        items = load_queue(
+            MagicMock(),
+            profile_label="test",
+            limit=20,
+            minimum_score=0,
+        )
+
+    assert items[0].score == 91
+    assert items[0].recommendation == "strong_apply"
+    assert items[0].matched_terms == ["Python", "AI Engineer"]
+    assert "local_agent_assessment" in items[0].risk_flags
+
+
+def test_closed_listing_overrides_persistent_agent_assessment() -> None:
+    stored, _ = _stored_profile_for_queue()
+    candidate = SimpleNamespace(
+        id=uuid4(),
+        provider="linkedin",
+        company_id=None,
+        company_name_raw="Acme",
+        title="AI Engineer",
+        listing_url="https://www.linkedin.com/jobs/view/123456",
+        snippet="Python role",
+        location="İstanbul",
+        work_mode="hybrid",
+        employment_type="full_time",
+        published_at=None,
+        activity_state="closed",
+        activity_code="linkedin_closed_marker",
+        operator_viewed_at=None,
+        last_seen_at=None,
+        status="needs_review",
+    )
+    assessment = SimpleNamespace(
+        score=98,
+        recommendation="strong_apply",
+        matched_requirements=["Python"],
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = stored
+    session.execute.return_value.all.return_value = [
+        (candidate, "Acme", assessment)
+    ]
+
+    with patch("app.review_job_board_queue.Session", return_value=session):
+        items = load_queue(
+            MagicMock(),
+            profile_label="test",
+            limit=20,
+            minimum_score=0,
+            include_unverified=True,
+        )
+
+    assert items[0].score == 0
+    assert items[0].recommendation == "skip"
+    assert "listing_closed" in items[0].risk_flags
 
 
 def test_entity_audit_is_dry_run_by_default() -> None:

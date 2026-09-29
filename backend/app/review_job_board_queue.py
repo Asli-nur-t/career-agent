@@ -2,7 +2,7 @@
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from uuid import UUID
 
@@ -17,7 +17,12 @@ from app.job_boards import (
 )
 from app.job_metadata import extract_job_metadata
 from app.matching import CandidateProfileSpec, JobMatchInput, score_job
-from app.models import CandidateProfile, Company, JobBoardCandidate
+from app.models import (
+    CandidateProfile,
+    Company,
+    JobBoardCandidate,
+    JobCandidateAssessment,
+)
 
 
 @dataclass(frozen=True)
@@ -187,8 +192,16 @@ def load_queue(
                     Company.name,
                     JobBoardCandidate.company_name_raw,
                 ),
+                JobCandidateAssessment,
             )
             .outerjoin(Company, Company.id == JobBoardCandidate.company_id)
+            .outerjoin(
+                JobCandidateAssessment,
+                (
+                    JobCandidateAssessment.candidate_id == JobBoardCandidate.id
+                )
+                & (JobCandidateAssessment.profile_id == stored_profile.id),
+            )
             .where(JobBoardCandidate.status == "needs_review")
         )
         if not include_unverified:
@@ -209,8 +222,9 @@ def load_queue(
             ).limit(limit)
         ).all()
 
-    ranked = [
-        rank_candidate(
+    ranked: list[RankedCandidate] = []
+    for candidate, company_name, assessment in rows:
+        deterministic = rank_candidate(
             profile,
             candidate_id=candidate.id,
             provider=candidate.provider,
@@ -226,8 +240,41 @@ def load_queue(
             activity_code=candidate.activity_code,
             operator_viewed_at=candidate.operator_viewed_at,
         )
-        for candidate, company_name in rows
-    ]
+        if assessment is None:
+            ranked.append(deterministic)
+            continue
+
+        risk_flags = list(dict.fromkeys([
+            *deterministic.risk_flags,
+            "local_agent_assessment",
+        ]))
+        score = assessment.score
+        recommendation = assessment.recommendation
+
+        # Activity and location policy are hard safety gates. A model score may
+        # enrich a valid candidate, but it may never revive a closed or
+        # policy-rejected listing.
+        if deterministic.activity_state == "closed":
+            score = 0
+            recommendation = "skip"
+        elif deterministic.score == 0 and deterministic.recommendation == "skip":
+            score = 0
+            recommendation = "skip"
+        elif "activity_unverified" in risk_flags and recommendation in {
+            "strong_apply",
+            "apply",
+        }:
+            recommendation = "review"
+
+        ranked.append(
+            replace(
+                deterministic,
+                score=score,
+                recommendation=recommendation,
+                matched_terms=list(assessment.matched_requirements),
+                risk_flags=risk_flags,
+            )
+        )
     return sorted(
         (item for item in ranked if item.score >= minimum_score),
         key=lambda item: (-item.score, item.company_name, item.title),
