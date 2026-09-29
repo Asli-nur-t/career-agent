@@ -400,7 +400,7 @@ def test_stale_cleanup_quarantines_instead_of_deleting() -> None:
         result = cleanup_stale_unassessed_browser_jobs(
             MagicMock(),
             profile_label="aslinur-default",
-            older_than_days=7,
+            older_than_days=0,
             limit=500,
             apply=True,
             confirmed_cleanup=True,
@@ -422,7 +422,7 @@ def test_stale_cleanup_refuses_unconfirmed_apply() -> None:
             cleanup_stale_unassessed_browser_jobs(
                 MagicMock(),
                 profile_label="aslinur-default",
-                older_than_days=7,
+                older_than_days=0,
                 limit=500,
                 apply=True,
                 confirmed_cleanup=False,

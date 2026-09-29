@@ -125,13 +125,18 @@ yanında sık kullanılan teknoloji ve analist rollerini içerir; yine en fazla 
 rol gerçekten taramaya gönderilir.
 
 Tarayıcı ajanı yalnızca operatörün ekrandaki açık onayından sonra başlatılır.
-“Eski eksikleri kaldır” işlemi önce etkilenecek kayıt sayısını gösterir ve
-ikinci bir onay ister. Yedi günden eski, açıklaması 100 karakterden kısa,
-görüntülenmemiş, hiçbir profil için Ollama değerlendirmesi ve başvuru kaydı
-olmayan kayıtlar fiziksel olarak silinmez; `filtered_out` durumuna alınarak
-geçmiş korunur. İnceleme kuyruğu varsa kalıcı Ollama değerlendirmesini,
+“Yorumsuzları kaldır” işlemi önce etkilenecek kayıt sayısını gösterir ve ikinci
+bir onay ister. Açıklaması 100 karakterden kısa, hiçbir profil için Ollama
+değerlendirmesi ve başvuru kaydı olmayan kayıtlar, daha önce açılmış olsalar da,
+fiziksel olarak silinmez; `filtered_out` durumuna alınarak geçmiş korunur.
+İnceleme kuyruğu varsa kalıcı Ollama değerlendirmesini,
 yoksa deterministik puanı kullanır. Kapalı veya konum/politika dışı bir ilanı
 model puanı yeniden başvurulabilir hale getiremez.
+
+Tarayıcı ajanının rol, konum ve çalışma biçimi kapsamı birbirinden bağımsız ve
+açıkça seçilir. Kart başlığı seçilen rol veya dar eş anlamlı grubuyla uyuşmazsa
+kaydedilmez. Seçilmeyen çalışma biçimleri elenir; `remote` seçilmediğinde yalnız
+uzaktan ilan yayımlayan kaynaklar hiç açılmadan atlanır.
 
 ```dotenv
 LOCAL_JOB_AGENT_ENABLED=true

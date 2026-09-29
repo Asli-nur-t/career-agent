@@ -14,6 +14,8 @@ from app.browser_job_agent import (
     browser_agent_timing_from_env,
     browser_job_matches_scope,
     browser_location_matches,
+    browser_provider_matches_work_modes,
+    browser_role_matches,
     build_linkedin_search_url,
     canonical_linkedin_job_url,
     infer_browser_work_mode,
@@ -305,4 +307,27 @@ def test_browser_scope_distinguishes_city_and_work_mode() -> None:
         allowed_work_modes={"remote"},
         actual_location=None,
         work_mode="remote",
+    )
+
+
+def test_browser_role_filter_rejects_unrelated_search_noise() -> None:
+    assert browser_role_matches("AI Engineer", "AI Engineering Manager")
+    assert browser_role_matches("iş analisti", "Grátis - İş Analisti")
+    assert browser_role_matches("Machine Learning Engineer", "ML Engineer")
+    assert not browser_role_matches("AI Engineer", "Okul Hekimi")
+    assert not browser_role_matches("iş analisti", "Proje Lideri")
+
+
+def test_remote_only_provider_is_skipped_when_remote_is_not_selected() -> None:
+    assert browser_provider_matches_work_modes(
+        "remoteok",
+        {"remote", "hybrid"},
+    )
+    assert not browser_provider_matches_work_modes(
+        "remoteok",
+        {"hybrid", "onsite"},
+    )
+    assert browser_provider_matches_work_modes(
+        "kariyer",
+        {"hybrid", "onsite"},
     )

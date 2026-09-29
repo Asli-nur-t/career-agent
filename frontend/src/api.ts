@@ -695,7 +695,7 @@ export function cleanupStaleBrowserCollectedJobs(
     method: "POST",
     body: JSON.stringify({
       profile,
-      older_than_days: 7,
+      older_than_days: 0,
       limit: 500,
       apply,
       confirmed_cleanup: apply,

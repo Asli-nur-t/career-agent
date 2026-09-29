@@ -580,7 +580,7 @@ class BrowserStaleCleanupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     profile: str = Field(min_length=1, max_length=100)
-    older_than_days: int = Field(default=7, ge=1, le=365)
+    older_than_days: int = Field(default=0, ge=0, le=365)
     limit: int = Field(default=500, ge=1, le=2_000)
     apply: bool = False
     confirmed_cleanup: bool = False
@@ -1858,7 +1858,6 @@ def cleanup_stale_unassessed_browser_jobs(
         raise ValueError("cleanup_confirmation_required")
 
     bounded_limit = max(1, min(limit, 2_000))
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
     activity_codes = (
         "browser_agent_listing_confirmation",
         "manual_operator_listing_confirmation",
@@ -1876,20 +1875,22 @@ def cleanup_stale_unassessed_browser_jobs(
         has_application = select(JobApplication.id).where(
             JobApplication.candidate_id == JobBoardCandidate.id
         ).exists()
+        conditions = [
+            JobBoardCandidate.activity_code.in_(activity_codes),
+            JobBoardCandidate.status == "needs_review",
+            or_(
+                JobBoardCandidate.snippet.is_(None),
+                func.length(func.btrim(JobBoardCandidate.snippet)) < 100,
+            ),
+            ~has_assessment,
+            ~has_application,
+        ]
+        if older_than_days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+            conditions.append(JobBoardCandidate.last_seen_at < cutoff)
         statement = (
             select(JobBoardCandidate)
-            .where(
-                JobBoardCandidate.activity_code.in_(activity_codes),
-                JobBoardCandidate.status == "needs_review",
-                JobBoardCandidate.last_seen_at < cutoff,
-                JobBoardCandidate.operator_viewed_at.is_(None),
-                or_(
-                    JobBoardCandidate.snippet.is_(None),
-                    func.length(func.btrim(JobBoardCandidate.snippet)) < 100,
-                ),
-                ~has_assessment,
-                ~has_application,
-            )
+            .where(*conditions)
             .order_by(JobBoardCandidate.last_seen_at.asc())
             .limit(bounded_limit)
         )

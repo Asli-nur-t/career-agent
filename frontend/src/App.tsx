@@ -451,10 +451,21 @@ const generalSearchWorkModes: SearchWorkMode[] = [
 ];
 const commonSearchRoles = [
   "AI Engineer", "Machine Learning Engineer", "GenAI Engineer", "RAG Engineer",
-  "NLP Engineer", "Data Scientist", "Data Engineer", "MLOps Engineer",
-  "Software Engineer", "Backend Engineer", "Python Developer", ".NET Developer",
-  "Full Stack Developer", "Business Analyst", "IT Business Analyst", "Data Analyst",
-  "Product Analyst", "System Engineer", "DevOps Engineer", "Cloud Engineer", "QA Engineer",
+  "LLM Engineer", "Applied AI Engineer", "AI Research Engineer", "Computer Vision Engineer",
+  "Deep Learning Engineer", "NLP Engineer", "Prompt Engineer", "Data Scientist",
+  "Data Engineer", "Analytics Engineer", "MLOps Engineer", "Data Analyst",
+  "Business Intelligence Analyst", "BI Developer", "Database Developer",
+  "Database Administrator", "Software Engineer", "Junior Software Engineer",
+  "Backend Engineer", "Backend Developer", "API Developer", "Python Developer",
+  ".NET Developer", "C# Developer", "Java Developer", "Frontend Developer",
+  "React Developer", "Full Stack Developer", "Mobile Developer", "Flutter Developer",
+  "iOS Developer", "Android Developer", "Business Analyst", "IT Business Analyst",
+  "System Analyst", "Product Analyst", "Product Manager", "Technical Product Manager",
+  "System Engineer", "DevOps Engineer", "Site Reliability Engineer", "Platform Engineer",
+  "Cloud Engineer", "Kubernetes Engineer", "Solutions Engineer", "QA Engineer",
+  "Software Test Engineer", "Test Automation Engineer", "Cyber Security Engineer",
+  "Information Security Specialist", "Network Engineer", "ERP Consultant",
+  "SAP Consultant", "CRM Specialist", "Implementation Consultant", "Technical Support Engineer",
 ];
 
 type BrowserApplicationFilter = "all" | "untracked" | ApplicationStatus;
@@ -537,7 +548,7 @@ function GeneralSearchView({
   const [providerFilter, setProviderFilter] = useState("all");
   const [dispositionFilter, setDispositionFilter] = useState("all");
   const [viewFilter, setViewFilter] = useState("all");
-  const [nativeRole, setNativeRole] = useState(roles[0] ?? "");
+  const [nativeRole, setNativeRole] = useState(roles[0] ?? availableRoles[0] ?? "");
   const [nativeLocation, setNativeLocation] = useState(locations[0] ?? "");
   const [nativeLinks, setNativeLinks] = useState<NativeSearchLink[]>([]);
   const [nativeUnavailable, setNativeUnavailable] = useState<string[]>([]);
@@ -556,6 +567,7 @@ function GeneralSearchView({
   const [browserMessage, setBrowserMessage] = useState<string | null>(null);
   const [browserError, setBrowserError] = useState<string | null>(null);
   const [selectedBrowserProviders, setSelectedBrowserProviders] = useState<BrowserAgentProvider[]>(browserAgentProviders);
+  const [browserWorkModes, setBrowserWorkModes] = useState<SearchWorkMode[]>(generalSearchWorkModes);
   const [browserDiagnostics, setBrowserDiagnostics] = useState<BrowserSourceDiagnostic[]>([]);
   const [browserCollected, setBrowserCollected] = useState<BrowserCollectedJob[]>([]);
   const [browserCollectedTotal, setBrowserCollectedTotal] = useState(0);
@@ -733,11 +745,11 @@ function GeneralSearchView({
         false,
       );
       if (preview.matched_count === 0) {
-        setBrowserMessage("Yedi günden eski, açıklaması yetersiz ve korunması gereken işlemi olmayan kayıt bulunamadı.");
+        setBrowserMessage("Açıklaması yetersiz, değerlendirmesi veya başvuru kaydı olmayan kayıt bulunamadı.");
         return;
       }
       const confirmed = window.confirm(
-        `${preview.matched_count} eski kayıt listeden kaldırılacak. Yalnızca ajan değerlendirmesi, görüntülenme veya başvuru kaydı olmayan ve açıklaması 100 karakterden kısa ilanlar etkilenecek. Devam edilsin mi?`,
+        `${preview.matched_count} yorumsuz kayıt listeden kaldırılacak. Yalnızca ajan değerlendirmesi ve başvuru kaydı olmayan, açıklaması 100 karakterden kısa ilanlar etkilenecek. Daha önce açılmış olmaları korunmalarına yetmez. Devam edilsin mi?`,
       );
       if (!confirmed) return;
       const result = await cleanupStaleBrowserCollectedJobs(
@@ -746,7 +758,7 @@ function GeneralSearchView({
         true,
       );
       await refreshBrowserCollected();
-      setBrowserMessage(`${result.quarantined_count} eski ve değerlendirilemeyen kayıt güvenli biçimde listeden kaldırıldı.`);
+      setBrowserMessage(`${result.quarantined_count} açıklaması yetersiz ve değerlendirilemeyen kayıt güvenli biçimde listeden kaldırıldı.`);
     } catch (caught) {
       setBrowserResultsError(errorMessage(caught));
     } finally {
@@ -787,8 +799,8 @@ function GeneralSearchView({
   }
 
   useEffect(() => {
-    if (!roles.includes(nativeRole)) setNativeRole(roles[0] ?? "");
-  }, [nativeRole, roles]);
+    if (!availableRoles.includes(nativeRole)) setNativeRole(availableRoles[0] ?? "");
+  }, [availableRoles, nativeRole]);
 
   useEffect(() => {
     if (nativeLocation && !locations.includes(nativeLocation)) {
@@ -854,8 +866,9 @@ function GeneralSearchView({
   async function runBrowserAgent() {
     if (!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0) return;
     const sourceNames = selectedBrowserProviders.map((provider) => label(provider)).join(", ");
+    const workModeNames = browserWorkModes.map((mode) => label(mode)).join(", ");
     if (!window.confirm(
-      `Görünür tarayıcı açılarak ${sourceNames} kaynaklarında “${nativeRole}” aranacak. Siteler dış istekleri görebilir ve gerekirse giriş/CAPTCHA işlemini senin tamamlaman gerekir. Tarama başlatılsın mı?`,
+      `Görünür tarayıcı açılarak ${sourceNames} kaynaklarında “${nativeRole}” aranacak. Yalnızca ${workModeNames} çalışma biçimleri kabul edilecek. Siteler dış istekleri görebilir ve gerekirse giriş/CAPTCHA işlemini senin tamamlaman gerekir. Tarama başlatılsın mı?`,
     )) return;
     setBrowserBusy(true);
     setBrowserError(null);
@@ -868,7 +881,7 @@ function GeneralSearchView({
         nativeRole,
         nativeLocation || null,
         selectedBrowserProviders,
-        workModes,
+        browserWorkModes,
       );
       await onManualImported();
       await refreshBrowserCollected();
@@ -1027,13 +1040,28 @@ function GeneralSearchView({
             <p>Ajan kaynakların kendi arama sayfalarını açar, görünen ilan kartlarını okur ve doğrulanan bağlantıları inceleme kuyruğuna ekler. Bir kaynak giriş isterse diğerleri çalışmaya devam eder.</p>
           </div>
           <div className="browser-agent-controls">
-            <label>Rol<select value={nativeRole} onChange={(event) => setNativeRole(event.target.value)}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+            <label>Rol<select value={nativeRole} onChange={(event) => setNativeRole(event.target.value)}>{availableRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
             <label>Konum<select value={nativeLocation} onChange={(event) => setNativeLocation(event.target.value)}><option value="">Kaynak varsayılanı</option>{locations.map((location) => <option key={location} value={location}>{location}</option>)}</select></label>
-            <span>
+            <div>
               <b>Çalışma biçimi</b>
-              {workModes.length ? workModes.map((mode) => label(mode)).join(" · ") : "Seçilmedi"}
+              <div className="choice-row compact-choice-row">
+                {generalSearchWorkModes.map((mode) => (
+                  <button
+                    type="button"
+                    className={browserWorkModes.includes(mode) ? "selected" : ""}
+                    key={mode}
+                    onClick={() => setBrowserWorkModes((current) => (
+                      current.includes(mode)
+                        ? current.filter((item) => item !== mode)
+                        : [...current, mode]
+                    ))}
+                  >
+                    {label(mode)}
+                  </button>
+                ))}
+              </div>
               <small>Kaynak başına en fazla 10 ilan</small>
-            </span>
+            </div>
           </div>
           <div className="browser-source-picker" aria-label="Tarayıcı ajanı kaynakları">
             {browserAgentProviders.map((provider) => {
@@ -1052,20 +1080,20 @@ function GeneralSearchView({
           </div>
           <div className="browser-agent-actions">
             <div>{browserError && <span className="native-search-error">{browserError}</span>}{browserMessage && <span className="manual-job-success">{browserMessage}</span>}</div>
-            <button className="primary" type="button" disabled={!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0 || workModes.length === 0} onClick={() => { void runBrowserAgent(); }}>{browserBusy ? "Kaynaklar sırayla taranıyor…" : `${selectedBrowserProviders.length} kaynağı ajanla tara`}</button>
+            <button className="primary" type="button" disabled={!nativeRole || !selectedProfile || browserBusy || selectedBrowserProviders.length === 0 || browserWorkModes.length === 0} onClick={() => { void runBrowserAgent(); }}>{browserBusy ? "Kaynaklar sırayla taranıyor…" : `${selectedBrowserProviders.length} kaynağı ajanla tara`}</button>
           </div>
           {browserDiagnostics.length > 0 && (
             <div className="browser-diagnostics">
               {browserDiagnostics.map((item) => (
                 <div className={item.outcome} key={item.provider}>
                   <b>{item.label}</b>
-                  <span>{item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
-                  <small>{item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
+                  <span>{item.error_code === "browser_source_work_mode_excluded" ? "Çalışma biçimi dışında" : item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
+                  <small>{item.error_code === "browser_source_work_mode_excluded" ? "Remote seçili olmadığı için bu kaynak açılmadı" : item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
                 </div>
               ))}
             </div>
           )}
-          <small>Uzaktan ilanlarda şehir zorunlu değildir; hibrit ve iş yerinde ilanlar seçilen şehirle eşleşmelidir. Konumu veya çalışma biçimi doğrulanamayan kart kaydedilmez. Ajan CAPTCHA veya giriş kontrolünü aşmaz; giriş isteyen kaynağı raporlayıp diğerlerine geçer.</small>
+          <small>Yalnızca burada seçilen çalışma biçimleri kaydedilir; seçilmeyenler elenir. Remote seçilmezse yalnızca remote ilan yayımlayan kaynaklar açılmadan atlanır. Uzaktan ilanlarda şehir zorunlu değildir; hibrit ve iş yerinde ilanlar seçilen şehirle eşleşmelidir. Rolü, konumu veya çalışma biçimi doğrulanamayan kart kaydedilmez. Ajan CAPTCHA veya giriş kontrolünü aşmaz; giriş isteyen kaynağı raporlayıp diğerlerine geçer.</small>
           <div className="browser-collected-head">
             <div>
               <b>Toplanan ilanlar</b>
@@ -1073,7 +1101,7 @@ function GeneralSearchView({
             </div>
             <div className="browser-collected-tools">
               <button className="ghost" type="button" disabled={browserCleanupBusy} onClick={() => { void cleanupBrowserResults(); }}>{browserCleanupBusy ? "Ayıklanıyor…" : "Bozukları ayıkla"}</button>
-              <button className="ghost" type="button" disabled={browserCleanupBusy || !selectedProfile} onClick={() => { void cleanupStaleBrowserResults(); }}>Eski eksikleri kaldır</button>
+              <button className="ghost" type="button" disabled={browserCleanupBusy || !selectedProfile} onClick={() => { void cleanupStaleBrowserResults(); }}>Yorumsuzları kaldır</button>
               <button className="ghost" type="button" onClick={() => { void refreshBrowserCollected(); }}>Yenile</button>
             </div>
           </div>

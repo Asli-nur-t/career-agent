@@ -347,9 +347,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .browser-agent-panel h3 { margin: 4px 0 5px; font-size: 17px; }
 .browser-agent-panel p, .browser-agent-panel small { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .browser-agent-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.browser-agent-controls label, .browser-agent-controls span { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--muted); font-size: 10px; font-weight: 800; }
+.browser-agent-controls > label, .browser-agent-controls > div { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--muted); font-size: 10px; font-weight: 800; }
 .browser-agent-controls select { min-width: 0; border: 0; background: white; color: var(--ink); font-weight: 700; }
 .browser-agent-controls b { color: var(--ink); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.compact-choice-row { gap: 5px; }
+.compact-choice-row button { padding: 6px 8px; }
 .browser-source-picker { display: flex; flex-wrap: wrap; gap: 7px; }
 .browser-source-picker button { padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--muted); font-size: 10px; font-weight: 800; }
 .browser-source-picker button.selected { border-color: #95cbb3; background: #dff2e8; color: var(--green); }

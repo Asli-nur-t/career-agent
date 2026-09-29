@@ -45,6 +45,49 @@ _REMOTE_ONLY_PROVIDERS = {
 
 _WORK_MODES = {"remote", "hybrid", "onsite"}
 
+_ROLE_ALIAS_GROUPS = (
+    ("ai engineer", "ai engineering", "artificial intelligence engineer", "yapay zeka muhendisi", "yapay zeka stajyeri"),
+    ("machine learning engineer", "ml engineer", "makine ogrenmesi muhendisi"),
+    ("genai engineer", "generative ai engineer", "generative artificial intelligence engineer"),
+    ("rag engineer", "retrieval augmented generation engineer"),
+    ("nlp engineer", "natural language processing engineer", "dogal dil isleme muhendisi"),
+    ("data scientist", "veri bilimci", "veri bilimi uzmani"),
+    ("data engineer", "veri muhendisi"),
+    ("data analyst", "veri analisti"),
+    ("business analyst", "it business analyst", "is analisti", "bilgi teknolojileri is analisti"),
+    ("product analyst", "urun analisti"),
+    ("system analyst", "systems analyst", "sistem analisti"),
+    ("software engineer", "software developer", "yazilim muhendisi", "yazilim gelistirici"),
+    ("backend engineer", "backend developer", "back end engineer", "back end developer"),
+    ("frontend engineer", "frontend developer", "front end engineer", "front end developer"),
+    ("full stack engineer", "full stack developer", "fullstack engineer", "fullstack developer"),
+    ("devops engineer", "devops specialist"),
+    ("mlops engineer", "mlops specialist"),
+    ("qa engineer", "quality assurance engineer", "software test engineer", "test automation engineer"),
+    ("site reliability engineer", "sre engineer"),
+    ("platform engineer", "platform developer"),
+)
+
+_ROLE_NOISE_TOKENS = {
+    "junior",
+    "jr",
+    "senior",
+    "sr",
+    "lead",
+    "principal",
+    "staff",
+    "mid",
+    "level",
+    "engineer",
+    "engineering",
+    "developer",
+    "specialist",
+    "uzman",
+    "uzmani",
+    "muhendis",
+    "muhendisi",
+}
+
 _REMOTE_MARKERS = (
     "remote",
     "uzaktan",
@@ -686,6 +729,36 @@ def browser_location_matches(
     return any(term in actual_terms for term in requested_terms)
 
 
+def browser_role_matches(requested_role: str, title: str) -> bool:
+    """Require a visible title to match the requested role or a narrow alias."""
+
+    requested = _search_normalized(requested_role)
+    actual = _search_normalized(title)
+    if not requested or not actual:
+        return False
+    if requested in actual:
+        return True
+
+    for aliases in _ROLE_ALIAS_GROUPS:
+        normalized_aliases = tuple(_search_normalized(alias) for alias in aliases)
+        if any(alias in requested for alias in normalized_aliases):
+            return any(alias in actual for alias in normalized_aliases)
+
+    required_terms = {
+        term for term in requested.split() if term not in _ROLE_NOISE_TOKENS
+    }
+    return bool(required_terms) and required_terms <= set(actual.split())
+
+
+def browser_provider_matches_work_modes(
+    provider: str,
+    allowed_work_modes: set[str] | frozenset[str],
+) -> bool:
+    """Skip remote-only boards when remote work is not selected."""
+
+    return provider not in _REMOTE_ONLY_PROVIDERS or "remote" in allowed_work_modes
+
+
 def browser_job_matches_scope(
     *,
     requested_location: str | None,
@@ -1060,6 +1133,7 @@ def _collect_page_jobs(
     page: object,
     *,
     provider: str,
+    requested_role: str,
     max_results: int,
     requested_location: str | None,
     allowed_work_modes: frozenset[str],
@@ -1103,6 +1177,8 @@ def _collect_page_jobs(
                 raw_title=raw_title,
             )
         except (ValueError, TypeError):
+            continue
+        if not browser_role_matches(requested_role, title):
             continue
         work_mode = infer_browser_work_mode(
             provider=provider,
@@ -1200,6 +1276,22 @@ def collect_browser_jobs(
             context.set_default_timeout(8_000)
             initial_page = context.pages[0] if context.pages else None
             for link_index, link in enumerate(links):
+                if not browser_provider_matches_work_modes(
+                    link.provider,
+                    allowed_work_modes,
+                ):
+                    diagnostics.append(
+                        BrowserSourceDiagnostic(
+                            link.provider,
+                            link.label,
+                            "no_results",
+                            0,
+                            "browser_source_work_mode_excluded",
+                            False,
+                            0,
+                        )
+                    )
+                    continue
                 page = initial_page or context.new_page()
                 initial_page = None
                 agent_used = False
@@ -1301,6 +1393,7 @@ def collect_browser_jobs(
                     jobs = _collect_page_jobs(
                         page,
                         provider=link.provider,
+                        requested_role=role,
                         max_results=max_results_per_provider,
                         requested_location=location,
                         allowed_work_modes=allowed_work_modes,
