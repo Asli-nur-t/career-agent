@@ -19,7 +19,9 @@ from app.operator_api import (
     BrowserCleanupResponse,
     BrowserCollectedItem,
     BrowserCollectedPage,
+    BrowserResultDismissResponse,
     ImportManualJobResponse,
+    _candidate_search_roles,
     cleanup_browser_collected_jobs,
 )
 
@@ -188,6 +190,7 @@ def test_browser_results_are_authenticated_and_persistent(monkeypatch) -> None:
         work_mode="hybrid",
         status="needs_review",
         collected_at=datetime.now(timezone.utc),
+        search_roles=["AI Engineer", "Machine Learning Engineer"],
     )
     page = BrowserCollectedPage(total=1, limit=100, offset=0, items=[item])
     with patch("app.operator_api.load_browser_collected_jobs", return_value=page):
@@ -203,6 +206,59 @@ def test_browser_results_are_authenticated_and_persistent(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["title"] == "AI Engineer"
+    assert response.json()["items"][0]["search_roles"] == [
+        "AI Engineer",
+        "Machine Learning Engineer",
+    ]
+
+
+def test_browser_search_roles_are_unique_and_ignore_other_evidence() -> None:
+    candidate = SimpleNamespace(
+        evidence=[
+            {"kind": "browser_agent_import", "search_role": "AI Engineer"},
+            {"kind": "manual_operator_import", "search_role": "Data Engineer"},
+            {"kind": "browser_agent_import", "search_role": "ai engineer"},
+            {"kind": "browser_agent_import", "search_role": "Business Analyst"},
+        ]
+    )
+
+    assert _candidate_search_roles(candidate) == ["AI Engineer", "Business Analyst"]
+
+
+def test_browser_result_can_be_hidden_and_restored_per_profile(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    candidate_id = uuid4()
+    with patch("app.operator_api.set_browser_candidate_dismissal") as update:
+        update.side_effect = [
+            BrowserResultDismissResponse(candidate_id=candidate_id, dismissed=True),
+            BrowserResultDismissResponse(candidate_id=candidate_id, dismissed=False),
+        ]
+        unauthorized = _client().post(
+            f"/operator/browser-agent/results/{candidate_id}/dismiss",
+            json={"profile": "aslinur-default"},
+        )
+        hidden = _client().post(
+            f"/operator/browser-agent/results/{candidate_id}/dismiss",
+            headers=_headers(),
+            json={"profile": "aslinur-default"},
+        )
+        restored = _client().post(
+            f"/operator/browser-agent/results/{candidate_id}/restore",
+            headers=_headers(),
+            json={"profile": "aslinur-default"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert hidden.status_code == 200
+    assert hidden.json() == {
+        "candidate_id": str(candidate_id),
+        "dismissed": True,
+    }
+    assert restored.status_code == 200
+    assert restored.json()["dismissed"] is False
+    assert update.call_args_list[0].kwargs["profile_label"] == "aslinur-default"
+    assert update.call_args_list[0].kwargs["dismissed"] is True
+    assert update.call_args_list[1].kwargs["dismissed"] is False
 
 
 def test_browser_cleanup_is_authenticated_and_non_destructive(monkeypatch) -> None:

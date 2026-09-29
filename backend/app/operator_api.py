@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Engine, func, or_, select
+from sqlalchemy import Engine, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -67,6 +67,7 @@ from app.models import (
     JobApplicationEvent,
     JobBoardCandidate,
     JobCandidateAssessment,
+    JobCandidateDismissal,
     JobMatch,
     JobPosting,
     ProfileJobSearchRun,
@@ -144,6 +145,8 @@ class OperatorSummary(BaseModel):
 class OperatorProfileItem(BaseModel):
     label: str
     target_roles: list[str]
+    secondary_roles: list[str]
+    tertiary_roles: list[str]
     skills: list[str]
     professional_experience_years: int = Field(ge=0, le=50)
     internship_months: int = Field(ge=0, le=120)
@@ -509,7 +512,15 @@ class BrowserCollectRequest(BaseModel):
 class BrowserSourceDiagnosticItem(BaseModel):
     provider: str
     label: str
-    outcome: Literal["collected", "no_results", "login_required", "failed"]
+    outcome: Literal[
+        "collected",
+        "no_results",
+        "login_required",
+        "rate_limited",
+        "blocked",
+        "source_cooldown",
+        "failed",
+    ]
     collected_count: int
     error_code: str | None
     agent_used: bool = False
@@ -538,6 +549,7 @@ class BrowserCollectedItem(BaseModel):
     work_mode: Literal["remote", "hybrid", "onsite", "unknown"]
     status: str
     collected_at: datetime
+    search_roles: list[str] = Field(default_factory=list)
     assessment_state: Literal["ready", "pending", "unavailable"] = "unavailable"
     fit_score: int | None = Field(default=None, ge=0, le=100)
     fit_stars: int | None = Field(default=None, ge=1, le=5)
@@ -562,6 +574,17 @@ class BrowserCollectedPage(BaseModel):
 class BrowserCleanupResponse(BaseModel):
     repaired_count: int
     quarantined_count: int
+
+
+class BrowserResultProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+
+
+class BrowserResultDismissResponse(BaseModel):
+    candidate_id: UUID
+    dismissed: bool
 
 
 class JobViewedResponse(BaseModel):
@@ -684,6 +707,8 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
             select(
                 CandidateProfile.label,
                 CandidateProfile.target_roles,
+                CandidateProfile.secondary_roles,
+                CandidateProfile.tertiary_roles,
                 CandidateProfile.skills,
                 CandidateProfile.max_years_experience,
                 CandidateProfile.internship_months,
@@ -695,6 +720,8 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
         OperatorProfileItem(
             label=label,
             target_roles=roles if isinstance(roles, list) else [],
+            secondary_roles=(secondary if isinstance(secondary, list) else []),
+            tertiary_roles=(tertiary if isinstance(tertiary, list) else []),
             skills=skills if isinstance(skills, list) else [],
             professional_experience_years=professional_years,
             internship_months=internship_months,
@@ -704,6 +731,8 @@ def load_operator_profiles(database: Engine) -> list[OperatorProfileItem]:
         for (
             label,
             roles,
+            secondary,
+            tertiary,
             skills,
             professional_years,
             internship_months,
@@ -1302,6 +1331,21 @@ def _candidate_search_role(candidate: JobBoardCandidate) -> str | None:
     return None
 
 
+def _candidate_search_roles(candidate: JobBoardCandidate) -> list[str]:
+    evidence = candidate.evidence if isinstance(candidate.evidence, list) else []
+    roles: list[str] = []
+    seen: set[str] = set()
+    for item in evidence[-20:]:
+        if not isinstance(item, dict) or item.get("kind") != "browser_agent_import":
+            continue
+        role = safe_text(item.get("search_role"), 100)
+        role_key = role.casefold()
+        if role and role_key not in seen:
+            seen.add(role_key)
+            roles.append(role)
+    return roles
+
+
 def assess_browser_candidates(
     database: Engine,
     *,
@@ -1515,10 +1559,15 @@ def load_browser_collected_jobs(
         )
         if profile is None:
             raise ValueError("profile_not_found")
+        dismissed = select(JobCandidateDismissal.id).where(
+            JobCandidateDismissal.candidate_id == JobBoardCandidate.id,
+            JobCandidateDismissal.profile_id == profile.id,
+        ).exists()
         conditions = (
             JobBoardCandidate.activity_code.in_(activity_codes),
             JobBoardCandidate.status != "filtered_out",
             JobBoardCandidate.external_id.not_in(PLACEHOLDER_JOB_IDENTIFIERS),
+            ~dismissed,
         )
         total = session.scalar(
             select(func.count()).select_from(JobBoardCandidate).where(*conditions)
@@ -1582,6 +1631,7 @@ def load_browser_collected_jobs(
                     ),
                     status=candidate.status,
                     collected_at=candidate.last_seen_at,
+                    search_roles=_candidate_search_roles(candidate),
                     assessment_state=(
                         "ready"
                         if assessment is not None
@@ -1623,6 +1673,55 @@ def load_browser_collected_jobs(
         limit=limit,
         offset=offset,
         items=items,
+    )
+
+
+def set_browser_candidate_dismissal(
+    database: Engine,
+    *,
+    candidate_id: UUID,
+    profile_label: str,
+    dismissed: bool,
+) -> BrowserResultDismissResponse:
+    activity_codes = (
+        "browser_agent_listing_confirmation",
+        "manual_operator_listing_confirmation",
+    )
+    with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
+        candidate = session.scalar(
+            select(JobBoardCandidate).where(
+                JobBoardCandidate.id == candidate_id,
+                JobBoardCandidate.activity_code.in_(activity_codes),
+                JobBoardCandidate.external_id.not_in(PLACEHOLDER_JOB_IDENTIFIERS),
+            )
+        )
+        if candidate is None:
+            raise ValueError("candidate_not_found")
+
+        if dismissed:
+            session.execute(
+                pg_insert(JobCandidateDismissal)
+                .values(profile_id=profile.id, candidate_id=candidate.id)
+                .on_conflict_do_nothing(
+                    constraint="uq_job_candidate_dismissals_profile_candidate"
+                )
+            )
+        else:
+            session.execute(
+                delete(JobCandidateDismissal).where(
+                    JobCandidateDismissal.profile_id == profile.id,
+                    JobCandidateDismissal.candidate_id == candidate.id,
+                )
+            )
+        session.commit()
+    return BrowserResultDismissResponse(
+        candidate_id=candidate_id,
+        dismissed=dismissed,
     )
 
 
@@ -2699,7 +2798,7 @@ def operator_browser_collect(
 )
 def operator_browser_results(
     profile: Annotated[str, Query(min_length=1, max_length=100)],
-    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
 ) -> BrowserCollectedPage:
     try:
@@ -2718,6 +2817,72 @@ def operator_browser_results(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"error_code": "browser_results_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_results_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/browser-agent/results/{candidate_id}/dismiss",
+    response_model=BrowserResultDismissResponse,
+)
+def operator_dismiss_browser_result(
+    candidate_id: UUID,
+    request: BrowserResultProfileRequest,
+) -> BrowserResultDismissResponse:
+    try:
+        return set_browser_candidate_dismissal(
+            engine,
+            candidate_id=candidate_id,
+            profile_label=request.profile,
+            dismissed=True,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code in {"profile_not_found", "candidate_not_found"}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": code},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_result_dismiss_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_results_unavailable"},
+        ) from None
+
+
+@router.post(
+    "/browser-agent/results/{candidate_id}/restore",
+    response_model=BrowserResultDismissResponse,
+)
+def operator_restore_browser_result(
+    candidate_id: UUID,
+    request: BrowserResultProfileRequest,
+) -> BrowserResultDismissResponse:
+    try:
+        return set_browser_candidate_dismissal(
+            engine,
+            candidate_id=candidate_id,
+            profile_label=request.profile,
+            dismissed=False,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code in {"profile_not_found", "candidate_not_found"}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": code},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_result_restore_invalid"},
         ) from None
     except SQLAlchemyError:
         raise HTTPException(

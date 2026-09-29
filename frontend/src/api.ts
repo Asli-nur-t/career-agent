@@ -12,6 +12,8 @@ export type Summary = {
 export type Profile = {
   label: string;
   target_roles: string[];
+  secondary_roles: string[];
+  tertiary_roles: string[];
   skills: string[];
   professional_experience_years: number;
   internship_months: number;
@@ -283,7 +285,14 @@ export type BrowserAgentProvider =
 export type BrowserSourceDiagnostic = {
   provider: BrowserAgentProvider;
   label: string;
-  outcome: "collected" | "no_results" | "login_required" | "failed";
+  outcome:
+    | "collected"
+    | "no_results"
+    | "login_required"
+    | "rate_limited"
+    | "blocked"
+    | "source_cooldown"
+    | "failed";
   collected_count: number;
   error_code: string | null;
   agent_used: boolean;
@@ -312,6 +321,7 @@ export type BrowserCollectedJob = {
   work_mode: SearchWorkMode | "unknown";
   status: string;
   collected_at: string;
+  search_roles: string[];
   assessment_state: "ready" | "pending" | "unavailable";
   fit_score: number | null;
   fit_stars: number | null;
@@ -336,6 +346,11 @@ export type BrowserCollectedPage = {
 export type BrowserCleanupResponse = {
   repaired_count: number;
   quarantined_count: number;
+};
+
+export type BrowserResultDismissResponse = {
+  candidate_id: string;
+  dismissed: boolean;
 };
 
 export type SearchSourceDiagnostic = {
@@ -663,6 +678,30 @@ export function cleanupBrowserCollectedJobs(
   return request(token, "/operator/browser-agent/results/cleanup", {
     method: "POST",
   });
+}
+
+export function dismissBrowserCollectedJob(
+  token: string,
+  candidateId: string,
+  profile: string,
+): Promise<BrowserResultDismissResponse> {
+  return request(
+    token,
+    `/operator/browser-agent/results/${encodeURIComponent(candidateId)}/dismiss`,
+    { method: "POST", body: JSON.stringify({ profile }) },
+  );
+}
+
+export function restoreBrowserCollectedJob(
+  token: string,
+  candidateId: string,
+  profile: string,
+): Promise<BrowserResultDismissResponse> {
+  return request(
+    token,
+    `/operator/browser-agent/results/${encodeURIComponent(candidateId)}/restore`,
+    { method: "POST", body: JSON.stringify({ profile }) },
+  );
 }
 
 export function getLatestProfileSearch(

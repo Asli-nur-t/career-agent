@@ -360,30 +360,45 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .browser-diagnostics > div b { color: var(--ink); }
 .browser-diagnostics > div span { color: var(--muted); }
 .browser-diagnostics > div.collected { border-color: #a8d8c1; background: #eef8f2; }
-.browser-diagnostics > div.login_required, .browser-diagnostics > div.failed { border-color: #ead39a; background: #fff7df; }
+.browser-diagnostics > div.login_required, .browser-diagnostics > div.rate_limited, .browser-diagnostics > div.source_cooldown, .browser-diagnostics > div.failed { border-color: #ead39a; background: #fff7df; }
+.browser-diagnostics > div.blocked { border-color: #e4b5ae; background: #fff0ed; }
 .browser-collected-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 13px; border-top: 1px solid #c8ded3; }
 .browser-collected-head > div { display: grid; gap: 3px; }
 .browser-collected-head b { color: var(--ink); font-size: 14px; }
 .browser-collected-head span, .browser-collected-empty { color: var(--muted); font-size: 10px; }
 .browser-collected-head .browser-collected-tools { display: flex; gap: 8px; justify-content: flex-end; }
+.agent-score-note { display: block; padding: 8px 10px; border-radius: 9px; background: #eef3f6; color: #53636d !important; }
+.browser-result-filters { display: grid; grid-template-columns: minmax(220px, 1.4fr) repeat(5, minmax(135px, .8fr)); gap: 7px; }
+.browser-result-filters input, .browser-result-filters select { min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--ink); font-size: 9px; }
+.browser-dismiss-undo { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid #d4e4db; border-radius: 9px; background: #f4f8f5; color: var(--muted); font-size: 9px; }
+.browser-dismiss-undo button { padding: 6px 9px; box-shadow: none; }
 .browser-collected-list { display: grid; gap: 7px; max-height: 520px; overflow: auto; padding-right: 3px; }
-.browser-collected-list article { display: grid; grid-template-columns: 115px minmax(0, 1fr) 155px; align-items: start; gap: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: white; }
+.browser-collected-list article { display: grid; grid-template-columns: 125px minmax(0, 1fr) 185px; align-items: start; gap: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: white; }
 .browser-collected-list article > div:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
 .browser-collected-list article > div:nth-child(2) b { overflow: hidden; color: var(--ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .browser-collected-list article > div:nth-child(2) span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.browser-collected-provider { color: var(--green); font-size: 9px; font-weight: 900; }
+.browser-collected-provider { display: grid; gap: 4px; align-content: start; color: var(--green); font-size: 9px; font-weight: 900; }
+.browser-collected-provider small { width: fit-content; max-width: 100%; overflow: hidden; padding: 3px 5px; border-radius: 6px; background: var(--green-2); color: var(--green); font-size: 8px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .browser-collected-actions { display: grid; justify-items: end; gap: 4px; }
 .browser-collected-actions small { color: var(--muted); font-size: 8px; }
 .browser-collected-actions a { color: var(--green); font-size: 9px; font-weight: 900; text-decoration: none; }
+.browser-collected-actions .application-quick-actions { margin-top: 3px; }
+.browser-dismiss-button { padding: 4px 0; border: 0; background: transparent; color: var(--red); font-size: 8px; font-weight: 800; box-shadow: none; }
+.browser-dismiss-button:hover { text-decoration: underline; transform: none; }
 .browser-collected-copy p { margin: 5px 0 0; color: #51635b; font-size: 9px; line-height: 1.45; }
 .agent-fit-details { margin-top: 5px; color: var(--muted); font-size: 9px; }
 .agent-fit-details summary { cursor: pointer; color: var(--green); font-weight: 800; }
 .agent-fit-details span { display: block; margin-top: 4px; overflow: visible !important; white-space: normal !important; }
 .agent-fit-score { display: grid; justify-items: end; gap: 1px; }
 .agent-fit-score strong { color: var(--ink); font-size: 17px; }
-.agent-fit-score > span { color: #b87919; font-size: 11px; letter-spacing: 1px; }
-.agent-fit-score.strong_apply > span, .agent-fit-score.apply > span { color: var(--green); }
-.agent-fit-score.skip > span { color: #a94b43; }
+.agent-fit-score strong small { margin-left: 3px; color: var(--muted); font-size: 8px; font-weight: 700; }
+.agent-fit-score .agent-fit-stars { color: #b87919; font-size: 11px; letter-spacing: 1px; }
+.agent-fit-score.strong_apply .agent-fit-stars, .agent-fit-score.apply .agent-fit-stars { color: var(--green); }
+.agent-fit-score.skip .agent-fit-stars { color: #a94b43; }
+.agent-fit-decision { color: var(--ink) !important; font-weight: 800; }
+.agent-fit-confidence { margin-top: 2px; padding: 2px 5px; border-radius: 999px; background: #eef2f0; color: #53635c !important; font-weight: 800; }
+.agent-fit-confidence.high { background: #e9eff6; color: #425d76 !important; }
+.agent-fit-confidence.low { background: #fff4dc; color: #86651e !important; }
 .native-search-panel { display: grid; gap: 14px; margin-top: 16px; padding: 17px; border: 1px solid #cfe2d7; border-radius: 14px; background: #f4faf6; }
 .native-search-copy h3 { margin: 4px 0 5px; font-size: 17px; }
 .native-search-copy > p:last-child { max-width: 900px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -541,6 +556,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .browser-agent-actions { align-items: stretch; flex-direction: column; }
   .browser-diagnostics { grid-template-columns: 1fr; }
   .browser-collected-head { align-items: stretch; flex-direction: column; }
+  .browser-result-filters { grid-template-columns: 1fr; }
   .browser-collected-list article { grid-template-columns: 1fr; }
   .browser-collected-actions { justify-items: start; }
   .general-result-card { grid-template-columns: 42px minmax(0, 1fr); }

@@ -49,6 +49,8 @@ import {
   updateProfileExperience,
   collectWithBrowserAgent,
   cleanupBrowserCollectedJobs,
+  dismissBrowserCollectedJob,
+  restoreBrowserCollectedJob,
 } from "./api";
 
 type View = "overview" | "search" | "jobs" | "applications" | "companies";
@@ -124,6 +126,17 @@ function label(value: string): string {
   return labels[value] ?? value.replaceAll("_", " ");
 }
 
+function confidenceLevel(value: "low" | "medium" | "high" | null): string {
+  if (value === "high") return "Yüksek";
+  if (value === "medium") return "Orta";
+  return "Düşük";
+}
+
+function displayedFitStars(item: BrowserCollectedJob): number {
+  if (item.fit_score === 0) return 0;
+  return Math.max(0, Math.min(5, item.fit_stars ?? 0));
+}
+
 function formatDate(value: string | null): string {
   if (!value) return "Bilinmiyor";
   const date = new Date(value);
@@ -164,6 +177,9 @@ function errorMessage(error: unknown): string {
       browser_agent_not_installed: "Tarayıcı ajanı kurulu değil. Playwright ve Chrome kurulumunu tamamlamalısın.",
       browser_human_action_required: "Tarayıcı giriş veya güvenlik kontrolünde bekliyor. Açılan Chrome penceresinde işlemi tamamlayıp yeniden dene.",
       browser_agent_unavailable: "Chrome başlatılamadı veya kaynak sayfa zamanında açılamadı.",
+      browser_agent_already_running: "Bir tarayıcı taraması zaten çalışıyor. Açık Chrome penceresinin tamamlanmasını bekle.",
+      browser_agent_cooldown_active: "Kaynakları korumak için tarayıcı taramaları arasında bekleme uygulanıyor. Daha sonra yeniden dene.",
+      browser_agent_config_invalid: "Tarayıcı bekleme ayarlarından biri geçersiz. .env değerlerini kontrol et.",
       browser_no_results: "Tarayıcı ajanı bu kapsamda okunabilir ilan bulamadı.",
       browser_request_invalid: "Tarayıcı ajanı için rol veya konum geçersiz.",
       browser_import_storage_unavailable: "Toplanan ilanlar şu anda kaydedilemedi.",
@@ -432,6 +448,22 @@ const browserAgentProviders: BrowserAgentProvider[] = [
 const generalSearchWorkModes: SearchWorkMode[] = [
   "remote", "hybrid", "onsite",
 ];
+const commonSearchRoles = [
+  "AI Engineer", "Machine Learning Engineer", "GenAI Engineer", "RAG Engineer",
+  "NLP Engineer", "Data Scientist", "Data Engineer", "MLOps Engineer",
+  "Software Engineer", "Backend Engineer", "Python Developer", ".NET Developer",
+  "Full Stack Developer", "Business Analyst", "IT Business Analyst", "Data Analyst",
+  "Product Analyst", "System Engineer", "DevOps Engineer", "Cloud Engineer", "QA Engineer",
+];
+
+type BrowserApplicationFilter = "all" | "untracked" | ApplicationStatus;
+type BrowserResultSort = "fit_desc" | "confidence_desc" | "newest";
+
+const confidenceRank: Record<"low" | "medium" | "high", number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+};
 
 function GeneralSearchView({
   token,
@@ -528,6 +560,14 @@ function GeneralSearchView({
   const [browserCollectedTotal, setBrowserCollectedTotal] = useState(0);
   const [browserResultsError, setBrowserResultsError] = useState<string | null>(null);
   const [browserCleanupBusy, setBrowserCleanupBusy] = useState(false);
+  const [browserQuery, setBrowserQuery] = useState("");
+  const [browserRoleFilter, setBrowserRoleFilter] = useState("all");
+  const [browserProviderFilter, setBrowserProviderFilter] = useState("all");
+  const [browserRecommendationFilter, setBrowserRecommendationFilter] = useState("all");
+  const [browserApplicationFilter, setBrowserApplicationFilter] = useState<BrowserApplicationFilter>("all");
+  const [browserSort, setBrowserSort] = useState<BrowserResultSort>("fit_desc");
+  const [browserDismissBusy, setBrowserDismissBusy] = useState<string | null>(null);
+  const [lastDismissed, setLastDismissed] = useState<{ candidateId: string; title: string } | null>(null);
   const [professionalYears, setProfessionalYears] = useState(
     selectedProfile?.professional_experience_years ?? 0,
   );
@@ -558,6 +598,59 @@ function GeneralSearchView({
         .some((value) => value.toLocaleLowerCase("tr-TR").includes(query));
     });
   }, [candidates, dispositionFilter, providerFilter, resultQuery, viewFilter]);
+  const browserSearchRoles = useMemo(
+    () => Array.from(new Set(browserCollected.flatMap((item) => item.search_roles))).sort((a, b) => a.localeCompare(b, "tr")),
+    [browserCollected],
+  );
+  const browserProviders = useMemo(
+    () => Array.from(new Set(browserCollected.map((item) => item.provider))).sort(),
+    [browserCollected],
+  );
+  const visibleBrowserCollected = useMemo(() => {
+    const query = browserQuery.trim().toLocaleLowerCase("tr-TR");
+    const filtered = browserCollected.filter((item) => {
+      if (browserRoleFilter !== "all" && !item.search_roles.includes(browserRoleFilter)) return false;
+      if (browserProviderFilter !== "all" && item.provider !== browserProviderFilter) return false;
+      if (browserRecommendationFilter === "pending" && item.assessment_state === "ready") return false;
+      if (
+        browserRecommendationFilter !== "all" &&
+        browserRecommendationFilter !== "pending" &&
+        item.fit_recommendation !== browserRecommendationFilter
+      ) return false;
+      const application = applicationByCandidate.get(item.candidate_id);
+      if (browserApplicationFilter === "untracked" && application) return false;
+      if (
+        browserApplicationFilter !== "all" &&
+        browserApplicationFilter !== "untracked" &&
+        application?.status !== browserApplicationFilter
+      ) return false;
+      if (!query) return true;
+      return [item.title, item.company_name, item.location ?? "", ...item.search_roles]
+        .some((value) => value.toLocaleLowerCase("tr-TR").includes(query));
+    });
+    return filtered.sort((left, right) => {
+      if (browserSort === "newest") {
+        return new Date(right.collected_at).getTime() - new Date(left.collected_at).getTime();
+      }
+      if (browserSort === "confidence_desc") {
+        const confidenceDifference = (right.fit_confidence ? confidenceRank[right.fit_confidence] : 0)
+          - (left.fit_confidence ? confidenceRank[left.fit_confidence] : 0);
+        if (confidenceDifference !== 0) return confidenceDifference;
+      }
+      const scoreDifference = (right.fit_score ?? -1) - (left.fit_score ?? -1);
+      if (scoreDifference !== 0) return scoreDifference;
+      return new Date(right.collected_at).getTime() - new Date(left.collected_at).getTime();
+    });
+  }, [
+    applicationByCandidate,
+    browserApplicationFilter,
+    browserCollected,
+    browserProviderFilter,
+    browserQuery,
+    browserRecommendationFilter,
+    browserRoleFilter,
+    browserSort,
+  ]);
 
   const refreshBrowserCollected = useCallback(async () => {
     if (!selectedProfile) {
@@ -569,7 +662,7 @@ function GeneralSearchView({
       const response = await getBrowserCollectedJobs(
         token,
         selectedProfile.label,
-        100,
+        500,
         0,
       );
       setBrowserCollected(response.items);
@@ -625,6 +718,38 @@ function GeneralSearchView({
       setBrowserResultsError(errorMessage(caught));
     } finally {
       setBrowserCleanupBusy(false);
+    }
+  }
+
+  async function dismissBrowserResult(item: BrowserCollectedJob) {
+    if (!selectedProfile || browserDismissBusy) return;
+    if (!window.confirm(`“${item.title}” bu profilin toplanmış ilan listesinden gizlensin mi? Başvuru geçmişi ve ilan kaydı silinmez.`)) return;
+    setBrowserDismissBusy(item.candidate_id);
+    setBrowserResultsError(null);
+    try {
+      await dismissBrowserCollectedJob(token, item.candidate_id, selectedProfile.label);
+      setBrowserCollected((current) => current.filter((candidate) => candidate.candidate_id !== item.candidate_id));
+      setBrowserCollectedTotal((current) => Math.max(0, current - 1));
+      setLastDismissed({ candidateId: item.candidate_id, title: item.title });
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setBrowserDismissBusy(null);
+    }
+  }
+
+  async function restoreLastDismissed() {
+    if (!selectedProfile || !lastDismissed || browserDismissBusy) return;
+    setBrowserDismissBusy(lastDismissed.candidateId);
+    setBrowserResultsError(null);
+    try {
+      await restoreBrowserCollectedJob(token, lastDismissed.candidateId, selectedProfile.label);
+      setLastDismissed(null);
+      await refreshBrowserCollected();
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setBrowserDismissBusy(null);
     }
   }
 
@@ -712,9 +837,13 @@ function GeneralSearchView({
       await refreshBrowserCollected();
       setBrowserDiagnostics(result.diagnostics);
       const loginCount = result.diagnostics.filter((item) => item.outcome === "login_required").length;
+      const limitedCount = result.diagnostics.filter((item) => item.outcome === "rate_limited" || item.outcome === "source_cooldown").length;
+      const blockedCount = result.diagnostics.filter((item) => item.outcome === "blocked").length;
       const failedCount = result.diagnostics.filter((item) => item.outcome === "failed").length;
       const suffix = [
         loginCount ? `${loginCount} kaynak giriş istedi` : "",
+        limitedCount ? `${limitedCount} kaynak beklemeye alındı` : "",
+        blockedCount ? `${blockedCount} kaynak güvenlik kontrolü gösterdi` : "",
         failedCount ? `${failedCount} kaynak açılamadı` : "",
       ].filter(Boolean).join("; ");
       const agentSources = result.diagnostics.filter((item) => item.agent_used).length;
@@ -893,8 +1022,8 @@ function GeneralSearchView({
               {browserDiagnostics.map((item) => (
                 <div className={item.outcome} key={item.provider}>
                   <b>{item.label}</b>
-                  <span>{item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
-                  <small>{item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
+                  <span>{item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
+                  <small>{item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
                 </div>
               ))}
             </div>
@@ -903,19 +1032,58 @@ function GeneralSearchView({
           <div className="browser-collected-head">
             <div>
               <b>Toplanan ilanlar</b>
-              <span>{browserCollectedTotal} kalıcı kayıt · en yeni 100 kayıt gösteriliyor</span>
+              <span>{browserCollectedTotal} görünür kayıt · {visibleBrowserCollected.length} sonuç gösteriliyor</span>
             </div>
             <div className="browser-collected-tools">
               <button className="ghost" type="button" disabled={browserCleanupBusy} onClick={() => { void cleanupBrowserResults(); }}>{browserCleanupBusy ? "Ayıklanıyor…" : "Bozukları ayıkla"}</button>
               <button className="ghost" type="button" onClick={() => { void refreshBrowserCollected(); }}>Yenile</button>
             </div>
           </div>
+          <small className="agent-score-note">Uygunluk puanı ve yıldızlar “bu ilana ne kadar uygunum?” sorusunu yanıtlar. “Analiz kanıtı” yalnızca ajanın ilan metninden yaptığı çıkarımın güvenilirliğidir; 0 uygunluk + yüksek kanıt, ajanın olumsuz karardan emin olduğu anlamına gelir.</small>
+          <div className="browser-result-filters">
+            <input value={browserQuery} onChange={(event) => setBrowserQuery(event.target.value)} placeholder="İlan, şirket, konum veya rol ara" />
+            <select value={browserRoleFilter} onChange={(event) => setBrowserRoleFilter(event.target.value)}>
+              <option value="all">Tüm arama rolleri</option>
+              {browserSearchRoles.map((role) => <option key={role} value={role}>{role}</option>)}
+            </select>
+            <select value={browserProviderFilter} onChange={(event) => setBrowserProviderFilter(event.target.value)}>
+              <option value="all">Tüm kaynaklar</option>
+              {browserProviders.map((provider) => <option key={provider} value={provider}>{label(provider)}</option>)}
+            </select>
+            <select value={browserRecommendationFilter} onChange={(event) => setBrowserRecommendationFilter(event.target.value)}>
+              <option value="all">Tüm öneriler</option>
+              <option value="strong_apply">Güçlü başvuru</option>
+              <option value="apply">Başvur</option>
+              <option value="review">İncele</option>
+              <option value="skip">Atla</option>
+              <option value="pending">Değerlendirme bekliyor</option>
+            </select>
+            <select value={browserApplicationFilter} onChange={(event) => setBrowserApplicationFilter(event.target.value as BrowserApplicationFilter)}>
+              <option value="all">Tüm başvuru durumları</option>
+              <option value="untracked">Takibe alınmamış</option>
+              {Object.keys(applicationTransitions).map((status) => <option key={status} value={status}>{label(status)}</option>)}
+            </select>
+            <select value={browserSort} onChange={(event) => setBrowserSort(event.target.value as BrowserResultSort)}>
+              <option value="fit_desc">Uygunluk: yüksekten düşüğe</option>
+              <option value="confidence_desc">Analiz kanıtı: yüksekten düşüğe</option>
+              <option value="newest">En yeni toplanan</option>
+            </select>
+          </div>
+          {lastDismissed && (
+            <div className="browser-dismiss-undo">
+              <span>“{lastDismissed.title}” listeden gizlendi.</span>
+              <button className="ghost" type="button" disabled={browserDismissBusy === lastDismissed.candidateId} onClick={() => { void restoreLastDismissed(); }}>Geri al</button>
+            </div>
+          )}
           {browserResultsError && <p className="native-search-error">{browserResultsError}</p>}
-          {browserCollected.length > 0 ? (
+          {visibleBrowserCollected.length > 0 ? (
             <div className="browser-collected-list">
-              {browserCollected.map((item) => (
+              {visibleBrowserCollected.map((item) => (
                 <article key={item.candidate_id}>
-                  <div className="browser-collected-provider">{label(item.provider)}</div>
+                  <div className="browser-collected-provider">
+                    <span>{label(item.provider)}</span>
+                    {item.search_roles.map((role) => <small key={role}>{role}</small>)}
+                  </div>
                   <div className="browser-collected-copy">
                     <b>{item.title}</b>
                     <span>{item.company_name}{item.location ? ` · ${item.location}` : ""} · {label(item.work_mode)}</span>
@@ -936,21 +1104,30 @@ function GeneralSearchView({
                   <div className="browser-collected-actions">
                     {item.assessment_state === "ready" ? (
                       <div className={`agent-fit-score ${item.fit_recommendation ?? "review"}`}>
-                        <strong>{item.fit_score}</strong>
-                        <span aria-label={`${item.fit_stars} yıldız`}>{"★".repeat(item.fit_stars ?? 0)}{"☆".repeat(5 - (item.fit_stars ?? 0))}</span>
-                        <small>{label(item.fit_recommendation ?? "review")} · {label(item.fit_confidence ?? "low")}</small>
+                        <strong>{item.fit_score}<small>/100 uygunluk</small></strong>
+                        <span className="agent-fit-stars" aria-label={`Uygunluk ${displayedFitStars(item)} / 5 yıldız`}>{"★".repeat(displayedFitStars(item))}{"☆".repeat(5 - displayedFitStars(item))}</span>
+                        <small className="agent-fit-decision">Öneri: {label(item.fit_recommendation ?? "review")}</small>
+                        <small className={`agent-fit-confidence ${item.fit_confidence ?? "low"}`}>Analiz kanıtı: {confidenceLevel(item.fit_confidence)}</small>
                       </div>
                     ) : (
                       <small>{item.assessment_state === "pending" ? "Yerel ajan değerlendirmesi bekleniyor" : "İlan metni okunamadı"}</small>
                     )}
                     <small>{label(item.status)}</small>
                     <a href={item.listing_url} target="_blank" rel="noopener noreferrer" onClick={() => onViewed(item.candidate_id)}>İlanı aç ↗</a>
+                    <ApplicationQuickActions
+                      status={applicationByCandidate.get(item.candidate_id)?.status}
+                      busy={applicationBusy === item.candidate_id}
+                      onUpdate={(status) => onApplication(item.candidate_id, status)}
+                    />
+                    <button className="browser-dismiss-button" type="button" disabled={browserDismissBusy === item.candidate_id} onClick={() => { void dismissBrowserResult(item); }}>
+                      {browserDismissBusy === item.candidate_id ? "Gizleniyor…" : "Listeden gizle"}
+                    </button>
                   </div>
                 </article>
               ))}
             </div>
           ) : !browserResultsError ? (
-            <p className="browser-collected-empty">Henüz toplanmış ilan yok.</p>
+            <p className="browser-collected-empty">{browserCollected.length > 0 ? "Seçili filtrelere uyan ilan yok." : "Henüz toplanmış ilan yok."}</p>
           ) : null}
         </section>
 
@@ -1767,15 +1944,22 @@ export default function App() {
   );
   const searchRunning = searchRun?.status === "queued" || searchRun?.status === "running";
   const matchedSearchCandidates = searchRun?.result.matched_candidates ?? [];
-  const profileRoleKey = selectedProfile?.target_roles.join("\u001f") ?? "";
+  const profileRoleKey = [
+    ...(selectedProfile?.target_roles ?? []),
+    ...(selectedProfile?.secondary_roles ?? []),
+    ...(selectedProfile?.tertiary_roles ?? []),
+  ].join("\u001f");
   const availableSearchRoles = useMemo(() => {
-    const base = selectedProfile?.target_roles ?? [];
-    return [
-      ...base,
-      ...searchRoles.filter(
-        (role) => !base.some((item) => item.toLocaleLowerCase("tr-TR") === role.toLocaleLowerCase("tr-TR")),
-      ),
+    const candidates = [
+      ...(selectedProfile?.target_roles ?? []),
+      ...(selectedProfile?.secondary_roles ?? []),
+      ...(selectedProfile?.tertiary_roles ?? []),
+      ...commonSearchRoles,
+      ...searchRoles,
     ];
+    return candidates.filter((role, index) => (
+      candidates.findIndex((item) => item.toLocaleLowerCase("tr-TR") === role.toLocaleLowerCase("tr-TR")) === index
+    ));
   }, [selectedProfile, searchRoles]);
   const searchBudget = profileSearchBudget(
     searchRoles.length,

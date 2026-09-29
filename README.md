@@ -81,10 +81,14 @@ adımı sonunda kontrol deterministik toplayıcıya geri döner.
 
 Kaynak başına en fazla 10 benzersiz ilan mevcut inceleme kuyruğuna aktarılır.
 Her URL aynı katı alan adı ve ilan-yolu allowlist'i ile doğrulanır. Bir kaynak
-giriş duvarı veya robot kontrolü gösterirse yalnızca o kaynak raporlanıp
-atlanır; diğer kaynaklar çalışmaya devam eder. Google SSO, otomasyon penceresini
-reddedebildiği için ajan girişe bağımlı tasarlanmamıştır ve hiçbir CAPTCHA ya da
-güvenlik kontrolünü atlatmaz. Ajan ayrı ve repoya alınmayan
+gerçek bir giriş duvarı gösterirse görünür pencere varsayılan olarak iki dakika
+açık tutulur. LinkedIn için doğrudan giriş ekranı açılır; kullanıcı bu sürede
+girişi kendisi tamamlarsa ajan aynı arama sayfasına geri döner. Tamamlanmazsa
+yalnızca o kaynak raporlanıp atlanır ve diğer kaynaklar çalışmaya devam eder.
+Sayfanın normal üst menüsündeki “Giriş yap” bağlantısı tek başına giriş duvarı
+sayılmaz. Kullanıcı adı, parola veya doğrulama kodu `.env` dosyasına konmaz;
+ajan hiçbir CAPTCHA ya da güvenlik kontrolünü atlatmaz. Ajan
+ayrı ve repoya alınmayan
 `.browser-agent-profile` dizinini kullanır; kişisel Chrome profilini doğrudan
 otomasyona vermez. Kurulumdan sonra sistemdeki Chrome'u kullanmak için ek bir
 Chromium indirmesi gerekmez:
@@ -105,11 +109,52 @@ nedeniyle en fazla 44 puan alır. Profesyonel yıl ve staj ayı operatör ekran�
 ayrı tutulur; profil değiştiğinde önceki ajan değerlendirmeleri geçersizleşir ve
 metni bulunan en yeni ilanlar yeniden değerlendirilir.
 
+Yıldızlar ve 0–100 puan yalnızca CV–ilan uygunluğudur. Arayüzdeki “Analiz
+kanıtı” ayrı bir ölçüdür ve modelin ilan metninden çıkardığı bilginin ne kadar
+güvenilir olduğunu anlatır. Bu nedenle “0 uygunluk · yüksek analiz kanıtı”,
+olumlu bir sonuç değil, olumsuz kararın açık ilana dayandığı anlamına gelir.
+Toplanan ilanlar varsayılan olarak uygunluk puanına göre sıralanır; ayrıca analiz
+kanıtı veya toplama zamanı sıralaması seçilebilir.
+
+Toplanan ilan ekranında metin, kaynak, aramayı üreten rol, öneri ve başvuru
+durumu filtreleri bulunur. Karttan doğrudan “Başvurulacak” veya “Başvuruldu”
+işaretlenebilir. “Listeden gizle” ilanı ya da başvuru geçmişini silmez; yalnızca
+seçili profil için görünümü kapatır ve son işlem arayüzden geri alınabilir.
+Aranabilir rol seçenekleri CV profilindeki birincil, ikincil ve üçüncül rollerin
+yanında sık kullanılan teknoloji ve analist rollerini içerir; yine en fazla 10
+rol gerçekten taramaya gönderilir.
+
 ```dotenv
 LOCAL_JOB_AGENT_ENABLED=true
 OLLAMA_AGENT_MODEL=qwen3:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+BROWSER_AGENT_CHANNEL=chrome
+BROWSER_AGENT_PROFILE_DIR=.browser-agent-profile
+
+# Sitelerde ani ve tekrarlı yük oluşturmayan sabit beklemeler
+BROWSER_AGENT_PAGE_SETTLE_SECONDS=2
+BROWSER_AGENT_SOURCE_DELAY_SECONDS=8
+BROWSER_AGENT_DETAIL_DELAY_SECONDS=2
+
+# Giriş ekranı görülürse kullanıcıya tanınan süre ve tam tarama tekrar aralığı
+BROWSER_AGENT_LOGIN_WAIT_SECONDS=120
+BROWSER_AGENT_RUN_COOLDOWN_SECONDS=900
+BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS=21600
 ```
+
+Beklemeler sabittir; tarayıcı parmak izi gizleme veya insan davranışı taklidi
+yapılmaz. Değerler backend tarafından sınırlandırılır ve geçersiz ayarda tarama
+kapalı biçimde durur. Aynı anda yalnızca bir görünür tarayıcı taraması çalışır.
+Tam tarama varsayılan ayarlarda birkaç dakika sürebilir. Oturum çerezleri yalnızca
+izinleri `0700` yapılan özel profil dizininde tutulur; bu dizin paylaşılmamalı veya
+repoya eklenmemelidir.
+
+HTTP 429, erişim reddi, olağandışı etkinlik veya güvenlik doğrulaması giriş
+isteğinden ayrı raporlanır. Böyle bir kaynak varsayılan olarak altı saat boyunca
+aynı backend sürecinde yeniden zorlanmaz; süre
+`BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS` ile değiştirilebilir. Backend
+yeniden başlatılırsa bu kaynak bazlı bellek sıfırlanır. Hesap kısıtlaması veya
+CAPTCHA görülürse süreyi beklemek ve kontrolü tarayıcıda elle tamamlamak gerekir.
 
 Yerel ajan ulaşılamazsa tarama bütünüyle kaybolmaz: güvenli, kurallı toplayıcı
 çalışmaya devam eder ve arayüz o kaynak için yedek akış kullanıldığını gösterir.

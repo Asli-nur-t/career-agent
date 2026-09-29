@@ -980,6 +980,39 @@ class JobCandidateAssessment(Base):
     )
 
 
+class JobCandidateDismissal(Base):
+    __tablename__ = "job_candidate_dismissals"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "candidate_id",
+            name="uq_job_candidate_dismissals_profile_candidate",
+        ),
+        Index(
+            "ix_job_candidate_dismissals_profile_created",
+            "profile_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidate_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_board_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class JobApplication(Base):
     __tablename__ = "job_applications"
     __table_args__ = (
