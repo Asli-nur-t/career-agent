@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -63,14 +64,51 @@ _ONSITE_MARKERS = (
     "ofisten",
 )
 
-_LOGIN_MARKERS = (
+_LOGIN_URL_MARKERS = (
     "/authwall",
     "/login",
     "/signin",
-    "sign in to continue",
-    "oturum aç",
-    "giriş yap",
+    "/uas/login",
 )
+
+_LOGIN_BODY_MARKERS = (
+    "sign in to continue",
+    "log in to continue",
+    "please sign in to continue",
+    "oturum açarak devam",
+    "devam etmek için giriş",
+)
+
+_RATE_LIMIT_MARKERS = (
+    "too many requests",
+    "rate limit",
+    "try again later",
+    "temporarily restricted",
+    "çok fazla istek",
+    "daha sonra tekrar deneyin",
+)
+
+_CHALLENGE_URL_MARKERS = (
+    "/checkpoint/",
+    "/challenge/",
+    "/captcha/",
+)
+
+_CHALLENGE_BODY_MARKERS = (
+    "captcha",
+    "verify you are human",
+    "security verification",
+    "unusual activity",
+    "automated requests",
+    "access denied",
+    "robot olmadığınızı",
+    "güvenlik doğrulaması",
+    "olağandışı etkinlik",
+)
+
+_PROVIDER_LOGIN_URLS = {
+    "linkedin": "https://www.linkedin.com/login",
+}
 
 _INDEED_FIELD_SELECTORS = {
     "title": (
@@ -147,6 +185,18 @@ class BrowserCollection:
     diagnostics: tuple[BrowserSourceDiagnostic, ...]
 
 
+@dataclass(frozen=True)
+class BrowserAgentTiming:
+    """Operator-controlled pacing; values are bounded before use."""
+
+    page_settle_seconds: float
+    source_delay_seconds: float
+    detail_delay_seconds: float
+    login_wait_seconds: float
+    run_cooldown_seconds: float
+    blocked_source_cooldown_seconds: float
+
+
 @dataclass
 class _InteractiveElement:
     locator: object
@@ -213,6 +263,130 @@ _JOB_DESCRIPTION_SELECTORS = (
     "main article",
     "main",
 )
+
+_COLLECTION_STATE_LOCK = threading.Lock()
+_COLLECTION_ACTIVE = False
+_COLLECTION_LAST_FINISHED_AT = 0.0
+_SOURCE_BLOCKED_UNTIL: dict[str, float] = {}
+
+
+def _bounded_env_seconds(
+    name: str,
+    *,
+    default: float,
+    maximum: float,
+) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise BrowserAgentError("browser_agent_config_invalid") from error
+    if not 0 <= value <= maximum:
+        raise BrowserAgentError("browser_agent_config_invalid")
+    return value
+
+
+def browser_agent_timing_from_env() -> BrowserAgentTiming:
+    """Load conservative delays without accepting unbounded environment input."""
+
+    return BrowserAgentTiming(
+        page_settle_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_PAGE_SETTLE_SECONDS",
+            default=2.0,
+            maximum=30.0,
+        ),
+        source_delay_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_SOURCE_DELAY_SECONDS",
+            default=8.0,
+            maximum=120.0,
+        ),
+        detail_delay_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_DETAIL_DELAY_SECONDS",
+            default=2.0,
+            maximum=30.0,
+        ),
+        login_wait_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_LOGIN_WAIT_SECONDS",
+            default=120.0,
+            maximum=600.0,
+        ),
+        run_cooldown_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_RUN_COOLDOWN_SECONDS",
+            default=900.0,
+            maximum=86_400.0,
+        ),
+        blocked_source_cooldown_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS",
+            default=21_600.0,
+            maximum=604_800.0,
+        ),
+    )
+
+
+def _wait_page(page: object, seconds: float) -> None:
+    if seconds <= 0:
+        return
+    milliseconds = max(1, round(seconds * 1_000))
+    try:
+        page.wait_for_timeout(milliseconds)
+    except Exception:
+        time.sleep(seconds)
+
+
+def _wait_for_login_handoff(page: object, wait_seconds: float) -> bool:
+    """Pause for manual login; never enter credentials or bypass a challenge."""
+
+    remaining = max(0.0, wait_seconds)
+    while remaining > 0:
+        state = _page_access_state(page)
+        if state == "ok":
+            return True
+        if state != "login_required":
+            return False
+        interval = min(2.0, remaining)
+        _wait_page(page, interval)
+        remaining -= interval
+    return _page_access_state(page) == "ok"
+
+
+def _defer_blocked_source(provider: str, cooldown_seconds: float) -> None:
+    if cooldown_seconds <= 0:
+        return
+    with _COLLECTION_STATE_LOCK:
+        _SOURCE_BLOCKED_UNTIL[provider] = max(
+            _SOURCE_BLOCKED_UNTIL.get(provider, 0.0),
+            time.monotonic() + cooldown_seconds,
+        )
+
+
+def _source_cooldown_remaining(provider: str) -> float:
+    with _COLLECTION_STATE_LOCK:
+        blocked_until = _SOURCE_BLOCKED_UNTIL.get(provider, 0.0)
+        remaining = blocked_until - time.monotonic()
+        if remaining <= 0:
+            _SOURCE_BLOCKED_UNTIL.pop(provider, None)
+            return 0.0
+        return remaining
+
+
+def _begin_browser_collection(cooldown_seconds: float) -> None:
+    global _COLLECTION_ACTIVE
+    with _COLLECTION_STATE_LOCK:
+        if _COLLECTION_ACTIVE:
+            raise BrowserAgentError("browser_agent_already_running")
+        elapsed = time.monotonic() - _COLLECTION_LAST_FINISHED_AT
+        if _COLLECTION_LAST_FINISHED_AT and elapsed < cooldown_seconds:
+            raise BrowserAgentError("browser_agent_cooldown_active")
+        _COLLECTION_ACTIVE = True
+
+
+def _finish_browser_collection() -> None:
+    global _COLLECTION_ACTIVE, _COLLECTION_LAST_FINISHED_AT
+    with _COLLECTION_STATE_LOCK:
+        _COLLECTION_ACTIVE = False
+        _COLLECTION_LAST_FINISHED_AT = time.monotonic()
 
 
 def build_linkedin_search_url(role: str, location: str | None) -> str:
@@ -526,18 +700,56 @@ def browser_job_matches_scope(
     return browser_location_matches(requested_location, actual_location)
 
 
-def _login_required(page: object) -> bool:
-    current_url = safe_text(getattr(page, "url", ""), 2048).casefold()
-    if any(marker in current_url for marker in _LOGIN_MARKERS):
-        return True
+def _page_body_text(page: object) -> str:
     try:
-        text = safe_text(
+        return safe_text(
             page.locator("body").inner_text(timeout=2_000),
-            4_000,
+            8_000,
         ).casefold()
     except Exception:  # Page state varies after cross-origin redirects.
-        return False
-    return any(marker in text for marker in _LOGIN_MARKERS)
+        return ""
+
+
+def _response_status(response: object | None) -> int | None:
+    status = getattr(response, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    return None
+
+
+def _page_access_state(
+    page: object,
+    response_status: int | None = None,
+) -> str:
+    """Classify access without treating a normal header login link as a wall."""
+
+    current_url = safe_text(getattr(page, "url", ""), 2048).casefold()
+    text = _page_body_text(page)
+    if response_status == 429 or any(
+        marker in text for marker in _RATE_LIMIT_MARKERS
+    ):
+        return "rate_limited"
+    if response_status == 403:
+        return "blocked"
+    if any(marker in current_url for marker in _CHALLENGE_URL_MARKERS) or any(
+        marker in text for marker in _CHALLENGE_BODY_MARKERS
+    ):
+        return "blocked"
+    if response_status == 401:
+        return "login_required"
+    if any(marker in current_url for marker in _LOGIN_URL_MARKERS) or any(
+        marker in text for marker in _LOGIN_BODY_MARKERS
+    ):
+        return "login_required"
+    return "ok"
+
+
+def _access_diagnostic(state: str) -> tuple[str, str]:
+    if state == "rate_limited":
+        return "rate_limited", "browser_source_rate_limited"
+    if state == "blocked":
+        return "blocked", "browser_source_security_challenge"
+    return "login_required", "browser_source_login_required"
 
 
 def _control_label(locator: object) -> str:
@@ -767,7 +979,7 @@ def run_local_browser_filter_agent(
 
 
 def _extract_detail_text(page: object) -> str | None:
-    if _login_required(page):
+    if _page_access_state(page) != "ok":
         return None
     for selector in _JOB_DESCRIPTION_SELECTORS:
         try:
@@ -788,23 +1000,41 @@ def _extract_detail_text(page: object) -> str | None:
 def _enrich_job_descriptions(
     context: object,
     jobs: list[BrowserCollectedJob],
+    *,
+    page_settle_seconds: float,
+    detail_delay_seconds: float,
+    blocked_source_cooldown_seconds: float,
 ) -> list[BrowserCollectedJob]:
     if not jobs:
         return jobs
     detail_page = context.new_page()
     enriched: list[BrowserCollectedJob] = []
+    stop_detail_requests = False
     try:
-        for job in jobs:
+        for index, job in enumerate(jobs):
             description: str | None = None
-            try:
-                detail_page.goto(
-                    job.listing_url,
-                    wait_until="domcontentloaded",
-                    timeout=15_000,
-                )
-                description = _extract_detail_text(detail_page)
-            except Exception:
-                description = None
+            if not stop_detail_requests:
+                try:
+                    response = detail_page.goto(
+                        job.listing_url,
+                        wait_until="domcontentloaded",
+                        timeout=15_000,
+                    )
+                    _wait_page(detail_page, page_settle_seconds)
+                    access_state = _page_access_state(
+                        detail_page,
+                        _response_status(response),
+                    )
+                    if access_state in {"rate_limited", "blocked"}:
+                        _defer_blocked_source(
+                            job.provider,
+                            blocked_source_cooldown_seconds,
+                        )
+                        stop_detail_requests = True
+                    elif access_state == "ok":
+                        description = _extract_detail_text(detail_page)
+                except Exception:
+                    description = None
             enriched.append(
                 BrowserCollectedJob(
                     listing_url=job.listing_url,
@@ -816,6 +1046,8 @@ def _enrich_job_descriptions(
                     description_text=description,
                 )
             )
+            if not stop_detail_requests and index + 1 < len(jobs):
+                _wait_page(detail_page, detail_delay_seconds)
     finally:
         try:
             detail_page.close()
@@ -915,6 +1147,7 @@ def collect_browser_jobs(
     allowed_work_modes = frozenset(work_modes or _WORK_MODES)
     if not allowed_work_modes or not allowed_work_modes <= _WORK_MODES:
         raise ValueError("browser_work_modes_invalid")
+    timing = browser_agent_timing_from_env()
     links = build_provider_search_links(
         role=role,
         location=location,
@@ -938,24 +1171,25 @@ def collect_browser_jobs(
 
     all_jobs: list[BrowserCollectedJob] = []
     diagnostics: list[BrowserSourceDiagnostic] = []
+    _begin_browser_collection(timing.run_cooldown_seconds)
     local_agent: LocalOllamaJobAgent | None = None
-    if os.getenv("LOCAL_JOB_AGENT_ENABLED", "true").strip().casefold() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        try:
-            local_agent = LocalOllamaJobAgent(
-                model=os.getenv("OLLAMA_AGENT_MODEL", "qwen3:8b"),
-                base_url=os.getenv(
-                    "OLLAMA_BASE_URL",
-                    "http://127.0.0.1:11434",
-                ),
-            )
-        except ValueError:
-            local_agent = None
     try:
+        if os.getenv("LOCAL_JOB_AGENT_ENABLED", "true").strip().casefold() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            try:
+                local_agent = LocalOllamaJobAgent(
+                    model=os.getenv("OLLAMA_AGENT_MODEL", "qwen3:8b"),
+                    base_url=os.getenv(
+                        "OLLAMA_BASE_URL",
+                        "http://127.0.0.1:11434",
+                    ),
+                )
+            except ValueError:
+                local_agent = None
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),
@@ -965,19 +1199,88 @@ def collect_browser_jobs(
             )
             context.set_default_timeout(8_000)
             initial_page = context.pages[0] if context.pages else None
-            for link in links:
+            for link_index, link in enumerate(links):
                 page = initial_page or context.new_page()
                 initial_page = None
                 agent_used = False
                 agent_action_count = 0
                 agent_error_code: str | None = None
                 try:
-                    page.goto(
+                    if _source_cooldown_remaining(link.provider) > 0:
+                        diagnostics.append(
+                            BrowserSourceDiagnostic(
+                                link.provider,
+                                link.label,
+                                "source_cooldown",
+                                0,
+                                "browser_source_cooldown_active",
+                                False,
+                                0,
+                            )
+                        )
+                        continue
+                    response = page.goto(
                         link.url,
                         wait_until="domcontentloaded",
                         timeout=25_000,
                     )
-                    if local_agent is not None and not _login_required(page):
+                    _wait_page(page, timing.page_settle_seconds)
+                    access_state = _page_access_state(
+                        page,
+                        _response_status(response),
+                    )
+                    if access_state == "login_required":
+                        login_url = _PROVIDER_LOGIN_URLS.get(link.provider)
+                        if login_url:
+                            login_response = page.goto(
+                                login_url,
+                                wait_until="domcontentloaded",
+                                timeout=25_000,
+                            )
+                            _wait_page(page, timing.page_settle_seconds)
+                            access_state = _page_access_state(
+                                page,
+                                _response_status(login_response),
+                            )
+                        login_completed = (
+                            _wait_for_login_handoff(
+                                page,
+                                timing.login_wait_seconds,
+                            )
+                            if access_state == "login_required"
+                            else access_state == "ok"
+                        )
+                        if login_completed:
+                            response = page.goto(
+                                link.url,
+                                wait_until="domcontentloaded",
+                                timeout=25_000,
+                            )
+                            _wait_page(page, timing.page_settle_seconds)
+                            access_state = _page_access_state(
+                                page,
+                                _response_status(response),
+                            )
+                    if access_state != "ok":
+                        if access_state in {"rate_limited", "blocked"}:
+                            _defer_blocked_source(
+                                link.provider,
+                                timing.blocked_source_cooldown_seconds,
+                            )
+                        outcome, error_code = _access_diagnostic(access_state)
+                        diagnostics.append(
+                            BrowserSourceDiagnostic(
+                                link.provider,
+                                link.label,
+                                outcome,
+                                0,
+                                error_code,
+                                False,
+                                0,
+                            )
+                        )
+                        continue
+                    if local_agent is not None:
                         try:
                             agent_action_count = run_local_browser_filter_agent(
                                 page,
@@ -1002,7 +1305,15 @@ def collect_browser_jobs(
                         requested_location=location,
                         allowed_work_modes=allowed_work_modes,
                     )
-                    jobs = _enrich_job_descriptions(context, jobs)
+                    jobs = _enrich_job_descriptions(
+                        context,
+                        jobs,
+                        page_settle_seconds=timing.page_settle_seconds,
+                        detail_delay_seconds=timing.detail_delay_seconds,
+                        blocked_source_cooldown_seconds=(
+                            timing.blocked_source_cooldown_seconds
+                        ),
+                    )
                     if jobs:
                         all_jobs.extend(jobs)
                         diagnostics.append(
@@ -1017,16 +1328,24 @@ def collect_browser_jobs(
                             )
                         )
                     else:
-                        login_required = _login_required(page)
+                        access_state = _page_access_state(page)
+                        if access_state in {"rate_limited", "blocked"}:
+                            _defer_blocked_source(
+                                link.provider,
+                                timing.blocked_source_cooldown_seconds,
+                            )
+                        outcome, access_error_code = (
+                            _access_diagnostic(access_state)
+                            if access_state != "ok"
+                            else ("no_results", "browser_source_no_results")
+                        )
                         diagnostics.append(
                             BrowserSourceDiagnostic(
                                 link.provider,
                                 link.label,
-                                "login_required" if login_required else "no_results",
+                                outcome,
                                 0,
-                                "browser_source_login_required"
-                                if login_required
-                                else agent_error_code or "browser_source_no_results",
+                                agent_error_code or access_error_code,
                                 agent_used,
                                 agent_action_count,
                             )
@@ -1044,6 +1363,8 @@ def collect_browser_jobs(
                         )
                     )
                 finally:
+                    if link_index + 1 < len(links):
+                        _wait_page(page, timing.source_delay_seconds)
                     try:
                         page.close()
                     except PlaywrightError:
@@ -1057,6 +1378,7 @@ def collect_browser_jobs(
     finally:
         if local_agent is not None:
             local_agent.close()
+        _finish_browser_collection()
 
     return BrowserCollection(tuple(all_jobs), tuple(diagnostics))
 

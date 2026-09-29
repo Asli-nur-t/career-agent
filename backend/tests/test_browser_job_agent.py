@@ -1,8 +1,17 @@
 import pytest
+from unittest.mock import MagicMock, patch
+
+import app.browser_job_agent as browser_agent_module
 
 from app.browser_job_agent import (
+    BrowserAgentError,
     _card_fields,
+    _defer_blocked_source,
     _is_safe_filter_control,
+    _page_access_state,
+    _source_cooldown_remaining,
+    _wait_for_login_handoff,
+    browser_agent_timing_from_env,
     browser_job_matches_scope,
     browser_location_matches,
     build_linkedin_search_url,
@@ -11,6 +20,112 @@ from app.browser_job_agent import (
     normalize_browser_card_fields,
     normalize_browser_listing,
 )
+
+
+def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
+    monkeypatch.setenv("BROWSER_AGENT_PAGE_SETTLE_SECONDS", "3")
+    monkeypatch.setenv("BROWSER_AGENT_SOURCE_DELAY_SECONDS", "12")
+    monkeypatch.setenv("BROWSER_AGENT_DETAIL_DELAY_SECONDS", "2.5")
+    monkeypatch.setenv("BROWSER_AGENT_LOGIN_WAIT_SECONDS", "180")
+    monkeypatch.setenv("BROWSER_AGENT_RUN_COOLDOWN_SECONDS", "1200")
+    monkeypatch.setenv("BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS", "7200")
+
+    timing = browser_agent_timing_from_env()
+
+    assert timing.page_settle_seconds == 3
+    assert timing.source_delay_seconds == 12
+    assert timing.detail_delay_seconds == 2.5
+    assert timing.login_wait_seconds == 180
+    assert timing.run_cooldown_seconds == 1200
+    assert timing.blocked_source_cooldown_seconds == 7200
+
+    monkeypatch.setenv("BROWSER_AGENT_SOURCE_DELAY_SECONDS", "-1")
+    with pytest.raises(BrowserAgentError, match="browser_agent_config_invalid"):
+        browser_agent_timing_from_env()
+
+
+def test_login_handoff_waits_for_manual_completion() -> None:
+    page = MagicMock()
+    with patch(
+        "app.browser_job_agent._page_access_state",
+        side_effect=["login_required", "login_required", "ok"],
+    ):
+        assert _wait_for_login_handoff(page, 10)
+
+    assert [item.args[0] for item in page.wait_for_timeout.call_args_list] == [
+        2_000,
+        2_000,
+    ]
+
+
+def test_login_handoff_stops_after_bounded_timeout() -> None:
+    page = MagicMock()
+    with patch(
+        "app.browser_job_agent._page_access_state",
+        return_value="login_required",
+    ):
+        assert not _wait_for_login_handoff(page, 5)
+
+    assert [item.args[0] for item in page.wait_for_timeout.call_args_list] == [
+        2_000,
+        2_000,
+        1_000,
+    ]
+
+
+def test_access_state_does_not_treat_header_login_link_as_wall() -> None:
+    page = MagicMock()
+    page.url = "https://tr.indeed.com/jobs?q=engineer"
+    page.locator.return_value.inner_text.return_value = (
+        "İş ilanları\nGiriş yap\nSoftware Engineer"
+    )
+
+    assert _page_access_state(page, 200) == "ok"
+
+
+def test_access_state_distinguishes_login_rate_limit_and_challenge() -> None:
+    page = MagicMock()
+    page.url = "https://www.linkedin.com/login"
+    page.locator.return_value.inner_text.return_value = "Welcome"
+    assert _page_access_state(page, 200) == "login_required"
+
+    page.url = "https://www.linkedin.com/jobs/search/"
+    page.locator.return_value.inner_text.return_value = "Too many requests"
+    assert _page_access_state(page, 429) == "rate_limited"
+
+    page.locator.return_value.inner_text.return_value = "Verify you are human"
+    assert _page_access_state(page, 200) == "blocked"
+
+
+def test_blocked_source_uses_a_bounded_process_cooldown(monkeypatch) -> None:
+    monkeypatch.setattr(browser_agent_module, "_SOURCE_BLOCKED_UNTIL", {})
+    now = [100.0]
+    monkeypatch.setattr(browser_agent_module.time, "monotonic", lambda: now[0])
+
+    _defer_blocked_source("linkedin", 60)
+    now[0] = 130.0
+    assert _source_cooldown_remaining("linkedin") == 30
+
+    now[0] = 161.0
+    assert _source_cooldown_remaining("linkedin") == 0
+
+
+def test_collection_gate_prevents_overlap_and_immediate_repeat(monkeypatch) -> None:
+    monkeypatch.setattr(browser_agent_module, "_COLLECTION_ACTIVE", False)
+    monkeypatch.setattr(
+        browser_agent_module,
+        "_COLLECTION_LAST_FINISHED_AT",
+        0.0,
+    )
+    monkeypatch.setattr(browser_agent_module.time, "monotonic", lambda: 100.0)
+
+    browser_agent_module._begin_browser_collection(60)
+    with pytest.raises(BrowserAgentError, match="browser_agent_already_running"):
+        browser_agent_module._begin_browser_collection(60)
+    browser_agent_module._finish_browser_collection()
+
+    with pytest.raises(BrowserAgentError, match="browser_agent_cooldown_active"):
+        browser_agent_module._begin_browser_collection(60)
 
 
 def test_local_agent_only_sees_safe_search_and_filter_controls() -> None:
