@@ -14,6 +14,7 @@ import {
   JobDetail,
   JobApplication,
   JobItem,
+  JobRoleCatalogItem,
   NativeSearchLink,
   NativeSearchSource,
   Profile,
@@ -33,6 +34,7 @@ import {
   getApplications,
   getBrowserCollectedJobs,
   getJobs,
+  getJobRoleCatalog,
   getProfiles,
   getSummary,
   getLatestProfileSearch,
@@ -50,7 +52,9 @@ import {
   collectWithBrowserAgent,
   cleanupBrowserCollectedJobs,
   cleanupStaleBrowserCollectedJobs,
+  cleanupRoleMismatchedBrowserJobs,
   dismissBrowserCollectedJob,
+  queueJobAssessmentBackfill,
   restoreBrowserCollectedJob,
 } from "./api";
 
@@ -449,25 +453,6 @@ const browserAgentProviders: BrowserAgentProvider[] = [
 const generalSearchWorkModes: SearchWorkMode[] = [
   "remote", "hybrid", "onsite",
 ];
-const commonSearchRoles = [
-  "AI Engineer", "Machine Learning Engineer", "GenAI Engineer", "RAG Engineer",
-  "LLM Engineer", "Applied AI Engineer", "AI Research Engineer", "Computer Vision Engineer",
-  "Deep Learning Engineer", "NLP Engineer", "Prompt Engineer", "Data Scientist",
-  "Data Engineer", "Analytics Engineer", "MLOps Engineer", "Data Analyst",
-  "Business Intelligence Analyst", "BI Developer", "Database Developer",
-  "Database Administrator", "Software Engineer", "Junior Software Engineer",
-  "Backend Engineer", "Backend Developer", "API Developer", "Python Developer",
-  ".NET Developer", "C# Developer", "Java Developer", "Frontend Developer",
-  "React Developer", "Full Stack Developer", "Mobile Developer", "Flutter Developer",
-  "iOS Developer", "Android Developer", "Business Analyst", "IT Business Analyst",
-  "System Analyst", "Product Analyst", "Product Manager", "Technical Product Manager",
-  "System Engineer", "DevOps Engineer", "Site Reliability Engineer", "Platform Engineer",
-  "Cloud Engineer", "Kubernetes Engineer", "Solutions Engineer", "QA Engineer",
-  "Software Test Engineer", "Test Automation Engineer", "Cyber Security Engineer",
-  "Information Security Specialist", "Network Engineer", "ERP Consultant",
-  "SAP Consultant", "CRM Specialist", "Implementation Consultant", "Technical Support Engineer",
-];
-
 type BrowserApplicationFilter = "all" | "untracked" | ApplicationStatus;
 type BrowserResultSort = "fit_desc" | "confidence_desc" | "newest";
 
@@ -573,6 +558,7 @@ function GeneralSearchView({
   const [browserCollectedTotal, setBrowserCollectedTotal] = useState(0);
   const [browserResultsError, setBrowserResultsError] = useState<string | null>(null);
   const [browserCleanupBusy, setBrowserCleanupBusy] = useState(false);
+  const [assessmentBackfillBusy, setAssessmentBackfillBusy] = useState(false);
   const [browserQuery, setBrowserQuery] = useState("");
   const [browserRoleFilter, setBrowserRoleFilter] = useState("all");
   const [browserProviderFilter, setBrowserProviderFilter] = useState("all");
@@ -766,6 +752,65 @@ function GeneralSearchView({
     }
   }
 
+  async function cleanupRoleMismatchedBrowserResults() {
+    if (!selectedProfile || browserCleanupBusy) return;
+    setBrowserCleanupBusy(true);
+    setBrowserResultsError(null);
+    try {
+      const preview = await cleanupRoleMismatchedBrowserJobs(
+        token,
+        selectedProfile.label,
+        false,
+      );
+      if (preview.matched_count === 0) {
+        setBrowserMessage("Arandığı rollerden hiçbirine uymayan korumasız eski kayıt bulunamadı.");
+        return;
+      }
+      const confirmed = window.confirm(
+        `${preview.matched_count} rol dışı eski kayıt listeden kaldırılacak. Ajan değerlendirmesi veya başvuru kaydı bulunan ilanlar korunur; kayıtlar silinmez, karantinaya alınır. Devam edilsin mi?`,
+      );
+      if (!confirmed) return;
+      const result = await cleanupRoleMismatchedBrowserJobs(
+        token,
+        selectedProfile.label,
+        true,
+      );
+      await refreshBrowserCollected();
+      setBrowserMessage(`${result.quarantined_count} rol dışı eski kayıt güvenli biçimde listeden kaldırıldı.`);
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setBrowserCleanupBusy(false);
+    }
+  }
+
+  async function backfillJobAssessments() {
+    if (!selectedProfile || assessmentBackfillBusy) return;
+    if (!window.confirm(
+      "Açıklaması yeterli ve henüz değerlendirilmemiş en fazla 25 ilan yerel Ollama ile analiz edilecek. Otomatik arama, tarayıcı ajanı ve elle eklenen ilanlar birlikte ele alınır; veri harici bir yapay zekâ servisine gönderilmez. Başlatılsın mı?",
+    )) return;
+    setAssessmentBackfillBusy(true);
+    setBrowserResultsError(null);
+    try {
+      const result = await queueJobAssessmentBackfill(
+        token,
+        selectedProfile.label,
+        25,
+      );
+      if (result.queued_count === 0) {
+        setBrowserMessage("Değerlendirme bekleyen, açıklaması yeterli ilan bulunamadı.");
+        return;
+      }
+      setBrowserMessage(`${result.queued_count} ilan yerel Ollama değerlendirmesine alındı. Kalanlar için işlem tamamlandıktan sonra aynı düğmeyi yeniden kullanabilirsin.`);
+      window.setTimeout(() => { void refreshBrowserCollected(); }, 5_000);
+      window.setTimeout(() => { void refreshBrowserCollected(); }, 15_000);
+    } catch (caught) {
+      setBrowserResultsError(errorMessage(caught));
+    } finally {
+      setAssessmentBackfillBusy(false);
+    }
+  }
+
   async function dismissBrowserResult(item: BrowserCollectedJob) {
     if (!selectedProfile || browserDismissBusy) return;
     if (!window.confirm(`“${item.title}” bu profilin toplanmış ilan listesinden gizlensin mi? Başvuru geçmişi ve ilan kaydı silinmez.`)) return;
@@ -889,11 +934,13 @@ function GeneralSearchView({
       const loginCount = result.diagnostics.filter((item) => item.outcome === "login_required").length;
       const limitedCount = result.diagnostics.filter((item) => item.outcome === "rate_limited" || item.outcome === "source_cooldown").length;
       const blockedCount = result.diagnostics.filter((item) => item.outcome === "blocked").length;
+      const disabledCount = result.diagnostics.filter((item) => item.outcome === "source_disabled").length;
       const failedCount = result.diagnostics.filter((item) => item.outcome === "failed").length;
       const suffix = [
         loginCount ? `${loginCount} kaynak giriş istedi` : "",
         limitedCount ? `${limitedCount} kaynak beklemeye alındı` : "",
         blockedCount ? `${blockedCount} kaynak güvenlik kontrolü gösterdi` : "",
+        disabledCount ? `${disabledCount} kaynak operatör ayarıyla kapalı` : "",
         failedCount ? `${failedCount} kaynak açılamadı` : "",
       ].filter(Boolean).join("; ");
       const agentSources = result.diagnostics.filter((item) => item.agent_used).length;
@@ -1087,21 +1134,23 @@ function GeneralSearchView({
               {browserDiagnostics.map((item) => (
                 <div className={item.outcome} key={item.provider}>
                   <b>{item.label}</b>
-                  <span>{item.error_code === "browser_source_work_mode_excluded" ? "Çalışma biçimi dışında" : item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
-                  <small>{item.error_code === "browser_source_work_mode_excluded" ? "Remote seçili olmadığı için bu kaynak açılmadı" : item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
+                  <span>{item.error_code === "browser_source_work_mode_excluded" ? "Çalışma biçimi dışında" : item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "source_disabled" ? "Operatör kapattı" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
+                  <small>{item.error_code === "browser_source_work_mode_excluded" ? "Remote seçili olmadığı için bu kaynak açılmadı" : item.error_code === "browser_source_human_verification_timeout" ? "Sayfa yenilenmeden doğrulama beklendi; tanınan süre doldu" : item.outcome === "source_disabled" ? "BROWSER_AGENT_DISABLED_PROVIDERS ayarından çıkarılana kadar açılmayacak" : item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
                 </div>
               ))}
             </div>
           )}
-          <small>Yalnızca burada seçilen çalışma biçimleri kaydedilir; seçilmeyenler elenir. Remote seçilmezse yalnızca remote ilan yayımlayan kaynaklar açılmadan atlanır. Uzaktan ilanlarda şehir zorunlu değildir; hibrit ve iş yerinde ilanlar seçilen şehirle eşleşmelidir. Rolü, konumu veya çalışma biçimi doğrulanamayan kart kaydedilmez. Ajan CAPTCHA veya giriş kontrolünü aşmaz; giriş isteyen kaynağı raporlayıp diğerlerine geçer.</small>
+          <small>Yalnızca burada seçilen çalışma biçimleri kaydedilir; seçilmeyenler elenir. Remote seçilmezse yalnızca remote ilan yayımlayan kaynaklar açılmadan atlanır. Uzaktan ilanlarda şehir zorunlu değildir; hibrit ve iş yerinde ilanlar seçilen şehirle eşleşmelidir. Rolü, konumu veya çalışma biçimi doğrulanamayan kart kaydedilmez. Ajan CAPTCHA veya giriş kontrolünü aşmaz; açık sayfayı yenilemeden kullanıcı işlemini bekler, süre dolarsa kaynağı korumaya alıp diğerlerine geçer.</small>
           <div className="browser-collected-head">
             <div>
               <b>Toplanan ilanlar</b>
               <span>{browserCollectedTotal} görünür kayıt · {visibleBrowserCollected.length} sonuç gösteriliyor</span>
             </div>
             <div className="browser-collected-tools">
+              <button className="ghost" type="button" disabled={assessmentBackfillBusy || !selectedProfile} onClick={() => { void backfillJobAssessments(); }}>{assessmentBackfillBusy ? "Değerlendiriliyor…" : "Eksik analizleri tamamla"}</button>
               <button className="ghost" type="button" disabled={browserCleanupBusy} onClick={() => { void cleanupBrowserResults(); }}>{browserCleanupBusy ? "Ayıklanıyor…" : "Bozukları ayıkla"}</button>
               <button className="ghost" type="button" disabled={browserCleanupBusy || !selectedProfile} onClick={() => { void cleanupStaleBrowserResults(); }}>Yorumsuzları kaldır</button>
+              <button className="ghost" type="button" disabled={browserCleanupBusy || !selectedProfile} onClick={() => { void cleanupRoleMismatchedBrowserResults(); }}>Rol dışındakileri kaldır</button>
               <button className="ghost" type="button" onClick={() => { void refreshBrowserCollected(); }}>Yenile</button>
             </div>
           </div>
@@ -1979,6 +2028,7 @@ export default function App() {
   const [view, setView] = useState<View>("overview");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [jobRoleCatalog, setJobRoleCatalog] = useState<JobRoleCatalogItem[]>([]);
   const [profile, setProfile] = useState("");
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -2020,13 +2070,13 @@ export default function App() {
       ...(selectedProfile?.target_roles ?? []),
       ...(selectedProfile?.secondary_roles ?? []),
       ...(selectedProfile?.tertiary_roles ?? []),
-      ...commonSearchRoles,
+      ...jobRoleCatalog.map((item) => item.name),
       ...searchRoles,
     ];
     return candidates.filter((role, index) => (
       candidates.findIndex((item) => item.toLocaleLowerCase("tr-TR") === role.toLocaleLowerCase("tr-TR")) === index
     ));
-  }, [selectedProfile, searchRoles]);
+  }, [jobRoleCatalog, selectedProfile, searchRoles]);
   const searchBudget = profileSearchBudget(
     searchRoles.length,
     searchMode,
@@ -2038,10 +2088,14 @@ export default function App() {
   );
 
   const refreshBase = useCallback(async (activeToken: string) => {
-    const [summaryData, profileData] = await Promise.all([
-      getSummary(activeToken), getProfiles(activeToken),
+    const [summaryData, profileData, roleCatalog] = await Promise.all([
+      getSummary(activeToken),
+      getProfiles(activeToken),
+      getJobRoleCatalog(activeToken),
     ]);
-    setSummary(summaryData); setProfiles(profileData);
+    setSummary(summaryData);
+    setProfiles(profileData);
+    setJobRoleCatalog(roleCatalog);
     setProfile((current) => current || profileData[0]?.label || "");
   }, []);
 

@@ -122,7 +122,9 @@ işaretlenebilir. “Listeden gizle” ilanı ya da başvuru geçmişini silmez;
 seçili profil için görünümü kapatır ve son işlem arayüzden geri alınabilir.
 Aranabilir rol seçenekleri CV profilindeki birincil, ikincil ve üçüncül rollerin
 yanında sık kullanılan teknoloji ve analist rollerini içerir; yine en fazla 10
-rol gerçekten taramaya gönderilir.
+rol gerçekten taramaya gönderilir. Bu ortak katalog backend'deki
+`app.job_roles.ROLE_CATALOG` kaynağından API ile arayüze aktarılır; başlık
+eş anlamlıları ile ekrandaki rol listesi ayrı ayrı güncellenmez.
 
 Tarayıcı ajanı yalnızca operatörün ekrandaki açık onayından sonra başlatılır.
 “Yorumsuzları kaldır” işlemi önce etkilenecek kayıt sayısını gösterir ve ikinci
@@ -133,10 +135,21 @@ fiziksel olarak silinmez; `filtered_out` durumuna alınarak geçmiş korunur.
 yoksa deterministik puanı kullanır. Kapalı veya konum/politika dışı bir ilanı
 model puanı yeniden başvurulabilir hale getiremez.
 
+Ollama değerlendirmesi yalnızca görünür tarayıcı ajanından gelen ilanlarla
+sınırlı değildir. Otomatik genel arama tamamlandığında kaydettiği adaylar da
+aynı yerel değerlendirme katmanına gönderilir. **Eksik analizleri tamamla**
+işlemi ise kaynağa bakmadan açıklaması en az 100 karakter olan ve seçili profil
+için değerlendirmesi bulunmayan ilanları 25'lik, yeniden çalıştırılabilir
+partiler halinde işler. Aynı ilan içeriği ve profil özeti daha önce
+değerlendirildiyse hash denetimi gereksiz model çağrısını engeller.
+
 Tarayıcı ajanının rol, konum ve çalışma biçimi kapsamı birbirinden bağımsız ve
 açıkça seçilir. Kart başlığı seçilen rol veya dar eş anlamlı grubuyla uyuşmazsa
 kaydedilmez. Seçilmeyen çalışma biçimleri elenir; `remote` seçilmediğinde yalnız
 uzaktan ilan yayımlayan kaynaklar hiç açılmadan atlanır.
+**Rol dışındakileri kaldır** eski taramalardan kalmış, arandığı rollerin hiçbirine
+uymayan kayıtları önce sayar ve ikinci onaydan sonra karantinaya alır. Herhangi
+bir profilde Ollama değerlendirmesi veya başvuru geçmişi bulunan kayıt korunur.
 
 ```dotenv
 LOCAL_JOB_AGENT_ENABLED=true
@@ -152,8 +165,13 @@ BROWSER_AGENT_DETAIL_DELAY_SECONDS=2
 
 # Giriş ekranı görülürse kullanıcıya tanınan süre ve tam tarama tekrar aralığı
 BROWSER_AGENT_LOGIN_WAIT_SECONDS=120
+BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS=300
+BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS=8
 BROWSER_AGENT_RUN_COOLDOWN_SECONDS=900
 BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS=21600
+
+# Site tarafındaki engel kalkana kadar hiç açılmaması gereken kaynaklar
+BROWSER_AGENT_DISABLED_PROVIDERS=
 ```
 
 Beklemeler sabittir; tarayıcı parmak izi gizleme veya insan davranışı taklidi
@@ -169,6 +187,18 @@ aynı backend sürecinde yeniden zorlanmaz; süre
 `BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS` ile değiştirilebilir. Backend
 yeniden başlatılırsa bu kaynak bazlı bellek sıfırlanır. Hesap kısıtlaması veya
 CAPTCHA görülürse süreyi beklemek ve kontrolü tarayıcıda elle tamamlamak gerekir.
+CAPTCHA/robot kontrolü ayrı bir insan doğrulaması olarak algılanır; ajan bu sayfayı
+yenilemeden en fazla `BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS` kadar bekler. Kontrol
+tamamlandıktan sonra sayfanın oturması için bir kez
+`BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS` kadar daha bekler ve yalnızca arama
+sayfasına dönmek gerekirse tek bir gezinme yapar. Kontrol tamamlanmazsa kaynak
+beklemeye alınır; doğrulamayı otomatik aşmaya çalışmaz.
+
+Site tarafında uzun süreli engel görülen bir kaynak virgülle ayrılmış allowlist
+anahtarlarıyla tamamen durdurulabilir. Örneğin
+`BROWSER_AGENT_DISABLED_PROVIDERS=yenibiris` ayarı Yenibiriş'e hiçbir tarayıcı
+isteği göndermez. Bilinmeyen kaynak adı yapılandırma hatası olarak fail-closed
+biçimde reddedilir.
 
 Yerel ajan ulaşılamazsa tarama bütünüyle kaybolmaz: güvenli, kurallı toplayıcı
 çalışmaya devam eder ve arayüz o kaynak için yedek akış kullanıldığını gösterir.

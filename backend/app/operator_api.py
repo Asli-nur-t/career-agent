@@ -20,6 +20,7 @@ from app.company_profile_search_service import (
 )
 from app.browser_job_agent import (
     BrowserAgentError,
+    browser_role_matches,
     collect_browser_jobs,
     normalize_browser_card_fields,
 )
@@ -44,6 +45,7 @@ from app.job_boards import (
     SUPPORTED_JOB_PROVIDERS,
     UNKNOWN_EMPLOYER,
 )
+from app.job_roles import ROLE_CATALOG
 from app.local_job_agent import (
     LocalJobAgentError,
     LocalOllamaJobAgent,
@@ -519,6 +521,7 @@ class BrowserSourceDiagnosticItem(BaseModel):
         "rate_limited",
         "blocked",
         "source_cooldown",
+        "source_disabled",
         "failed",
     ]
     collected_count: int
@@ -590,6 +593,32 @@ class BrowserStaleCleanupResponse(BaseModel):
     matched_count: int
     quarantined_count: int
     applied: bool
+
+
+class BrowserRoleCleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+    limit: int = Field(default=500, ge=1, le=2_000)
+    apply: bool = False
+    confirmed_cleanup: bool = False
+
+
+class JobRoleCatalogItem(BaseModel):
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+
+
+class JobAssessmentBackfillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    profile: str = Field(min_length=1, max_length=100)
+    limit: int = Field(default=25, ge=1, le=100)
+    confirmed_local_processing: Literal[True]
+
+
+class JobAssessmentBackfillResponse(BaseModel):
+    queued_count: int = Field(ge=0, le=100)
 
 
 class BrowserResultProfileRequest(BaseModel):
@@ -1362,13 +1391,13 @@ def _candidate_search_roles(candidate: JobBoardCandidate) -> list[str]:
     return roles
 
 
-def assess_browser_candidates(
+def assess_job_candidates(
     database: Engine,
     *,
     profile_label: str,
     candidate_ids: list[UUID],
 ) -> int:
-    """Assess collected jobs locally; failures never discard collected records."""
+    """Assess jobs from any ingestion source without discarding on agent failure."""
 
     bounded_ids = list(dict.fromkeys(candidate_ids))[:100]
     if not bounded_ids:
@@ -1527,27 +1556,37 @@ def assess_browser_candidates(
     return assessed_count
 
 
-def load_assessable_browser_candidate_ids(
+def load_assessable_candidate_ids(
     database: Engine,
     *,
+    profile_label: str,
     limit: int = 100,
 ) -> list[UUID]:
-    """Return recent candidates whose visible detail text can be assessed."""
+    """Return unassessed candidates with enough description, regardless of source."""
 
     bounded_limit = max(1, min(limit, 100))
     with Session(database) as session:
+        profile = session.scalar(
+            select(CandidateProfile).where(CandidateProfile.label == profile_label)
+        )
+        if profile is None:
+            raise ValueError("profile_not_found")
         return list(
             session.scalars(
                 select(JobBoardCandidate.id)
+                .outerjoin(
+                    JobCandidateAssessment,
+                    (
+                        JobCandidateAssessment.candidate_id
+                        == JobBoardCandidate.id
+                    )
+                    & (JobCandidateAssessment.profile_id == profile.id),
+                )
                 .where(
-                    JobBoardCandidate.activity_code.in_(
-                        (
-                            "browser_agent_listing_confirmation",
-                            "manual_operator_listing_confirmation",
-                        )
-                    ),
                     JobBoardCandidate.status != "filtered_out",
                     JobBoardCandidate.snippet.is_not(None),
+                    func.length(func.btrim(JobBoardCandidate.snippet)) >= 100,
+                    JobCandidateAssessment.id.is_(None),
                 )
                 .order_by(
                     JobBoardCandidate.last_seen_at.desc(),
@@ -1556,6 +1595,43 @@ def load_assessable_browser_candidate_ids(
                 .limit(bounded_limit)
             )
         )
+
+
+def assess_profile_search_run_candidates(
+    database: Engine,
+    run_id: UUID,
+) -> int:
+    """Assess candidates persisted by one completed automatic profile search."""
+
+    with Session(database) as session:
+        row = session.execute(
+            select(ProfileJobSearchRun, CandidateProfile.label)
+            .join(
+                CandidateProfile,
+                CandidateProfile.id == ProfileJobSearchRun.profile_id,
+            )
+            .where(ProfileJobSearchRun.id == run_id)
+        ).one_or_none()
+        if row is None or row[0].status != "succeeded":
+            return 0
+        run, profile_label = row
+        result = run.result if isinstance(run.result, dict) else {}
+        raw_candidates = result.get("matched_candidates", [])
+        if not isinstance(raw_candidates, list):
+            return 0
+        candidate_ids: list[UUID] = []
+        for item in raw_candidates[:100]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                candidate_ids.append(UUID(str(item.get("candidate_id", ""))))
+            except (TypeError, ValueError):
+                continue
+    return assess_job_candidates(
+        database,
+        profile_label=profile_label,
+        candidate_ids=candidate_ids,
+    )
 
 
 def load_browser_collected_jobs(
@@ -1911,6 +1987,79 @@ def cleanup_stale_unassessed_browser_jobs(
     return BrowserStaleCleanupResponse(
         matched_count=len(candidates),
         quarantined_count=(len(candidates) if apply else 0),
+        applied=apply,
+    )
+
+
+def cleanup_role_mismatched_browser_jobs(
+    database: Engine,
+    *,
+    profile_label: str,
+    limit: int,
+    apply: bool,
+    confirmed_cleanup: bool,
+) -> BrowserStaleCleanupResponse:
+    """Preview or quarantine old browser noise that matches none of its roles."""
+
+    if apply and not confirmed_cleanup:
+        raise ValueError("cleanup_confirmation_required")
+
+    bounded_limit = max(1, min(limit, 2_000))
+    with Session(database) as session:
+        profile_exists = session.scalar(
+            select(CandidateProfile.id).where(
+                CandidateProfile.label == profile_label
+            )
+        )
+        if profile_exists is None:
+            raise ValueError("profile_not_found")
+
+        has_assessment = select(JobCandidateAssessment.id).where(
+            JobCandidateAssessment.candidate_id == JobBoardCandidate.id
+        ).exists()
+        has_application = select(JobApplication.id).where(
+            JobApplication.candidate_id == JobBoardCandidate.id
+        ).exists()
+        statement = (
+            select(JobBoardCandidate)
+            .where(
+                JobBoardCandidate.activity_code
+                == "browser_agent_listing_confirmation",
+                JobBoardCandidate.status == "needs_review",
+                ~has_assessment,
+                ~has_application,
+            )
+            .order_by(
+                JobBoardCandidate.last_seen_at.asc(),
+                JobBoardCandidate.id,
+            )
+            .limit(bounded_limit)
+        )
+        if apply:
+            statement = statement.with_for_update()
+        candidates = list(session.scalars(statement))
+        mismatched = [
+            candidate
+            for candidate in candidates
+            if (roles := _candidate_search_roles(candidate))
+            and not any(
+                browser_role_matches(role, candidate.title) for role in roles
+            )
+        ]
+
+        if apply:
+            now = datetime.now(timezone.utc)
+            for candidate in mismatched:
+                _quarantine_browser_candidate(
+                    candidate,
+                    now=now,
+                    reason="role_mismatch_unassessed",
+                )
+            session.commit()
+
+    return BrowserStaleCleanupResponse(
+        matched_count=len(mismatched),
+        quarantined_count=(len(mismatched) if apply else 0),
         applied=apply,
     )
 
@@ -2450,6 +2599,57 @@ def operator_profiles() -> list[OperatorProfileItem]:
         ) from None
 
 
+@router.get("/job-roles", response_model=list[JobRoleCatalogItem])
+def operator_job_roles() -> list[JobRoleCatalogItem]:
+    return [
+        JobRoleCatalogItem(
+            name=definition.name,
+            aliases=list(definition.aliases),
+        )
+        for definition in ROLE_CATALOG
+    ]
+
+
+@router.post(
+    "/job-assessments/backfill",
+    response_model=JobAssessmentBackfillResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def operator_backfill_job_assessments(
+    request: JobAssessmentBackfillRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAssessmentBackfillResponse:
+    try:
+        candidate_ids = load_assessable_candidate_ids(
+            engine,
+            profile_label=request.profile,
+            limit=request.limit,
+        )
+    except ValueError as error:
+        if str(error) == "profile_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": "profile_not_found"},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "assessment_backfill_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "database_unavailable"},
+        ) from None
+    if candidate_ids:
+        background_tasks.add_task(
+            assess_job_candidates,
+            engine,
+            profile_label=request.profile,
+            candidate_ids=candidate_ids,
+        )
+    return JobAssessmentBackfillResponse(queued_count=len(candidate_ids))
+
+
 @router.patch(
     "/profiles/{profile_label}/experience",
     response_model=OperatorProfileItem,
@@ -2479,12 +2679,15 @@ def operator_update_profile_experience(
             detail={"error_code": "profile_not_found"},
         )
     try:
-        candidate_ids = load_assessable_browser_candidate_ids(engine)
-    except SQLAlchemyError:
+        candidate_ids = load_assessable_candidate_ids(
+            engine,
+            profile_label=profile_label,
+        )
+    except (SQLAlchemyError, ValueError):
         candidate_ids = []
     if candidate_ids:
         background_tasks.add_task(
-            assess_browser_candidates,
+            assess_job_candidates,
             engine,
             profile_label=profile_label,
             candidate_ids=candidate_ids,
@@ -2851,7 +3054,7 @@ def operator_browser_collect(
         ) from None
     if assessment_ids:
         background_tasks.add_task(
-            assess_browser_candidates,
+            assess_job_candidates,
             engine,
             profile_label=request.profile,
             candidate_ids=assessment_ids,
@@ -3033,6 +3236,44 @@ def operator_browser_stale_results_cleanup(
 
 
 @router.post(
+    "/browser-agent/results/role-cleanup",
+    response_model=BrowserStaleCleanupResponse,
+)
+def operator_browser_role_results_cleanup(
+    request: BrowserRoleCleanupRequest,
+) -> BrowserStaleCleanupResponse:
+    try:
+        return cleanup_role_mismatched_browser_jobs(
+            engine,
+            profile_label=request.profile,
+            limit=request.limit,
+            apply=request.apply,
+            confirmed_cleanup=request.confirmed_cleanup,
+        )
+    except ValueError as error:
+        code = str(error)
+        if code == "profile_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error_code": code},
+            ) from None
+        if code == "cleanup_confirmation_required":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error_code": code},
+            ) from None
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "browser_role_cleanup_invalid"},
+        ) from None
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "browser_cleanup_unavailable"},
+        ) from None
+
+
+@router.post(
     "/search-runs",
     response_model=SearchRunResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -3090,6 +3331,11 @@ def operator_start_search(
         engine,
         run_id,
         force=request.force,
+    )
+    background_tasks.add_task(
+        assess_profile_search_run_candidates,
+        engine,
+        run_id,
     )
     return _search_run_response(run, profile=request.profile, database=engine)
 

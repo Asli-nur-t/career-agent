@@ -9,8 +9,10 @@ from app.browser_job_agent import (
     _defer_blocked_source,
     _is_safe_filter_control,
     _page_access_state,
+    _resolve_initial_access,
     _source_cooldown_remaining,
-    _wait_for_login_handoff,
+    _wait_for_human_handoff,
+    browser_agent_disabled_providers_from_env,
     browser_agent_timing_from_env,
     browser_job_matches_scope,
     browser_location_matches,
@@ -22,6 +24,7 @@ from app.browser_job_agent import (
     normalize_browser_card_fields,
     normalize_browser_listing,
 )
+from app.job_roles import ROLE_ALIAS_GROUPS, ROLE_CATALOG
 
 
 def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
@@ -29,6 +32,8 @@ def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
     monkeypatch.setenv("BROWSER_AGENT_SOURCE_DELAY_SECONDS", "12")
     monkeypatch.setenv("BROWSER_AGENT_DETAIL_DELAY_SECONDS", "2.5")
     monkeypatch.setenv("BROWSER_AGENT_LOGIN_WAIT_SECONDS", "180")
+    monkeypatch.setenv("BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS", "420")
+    monkeypatch.setenv("BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS", "11")
     monkeypatch.setenv("BROWSER_AGENT_RUN_COOLDOWN_SECONDS", "1200")
     monkeypatch.setenv("BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS", "7200")
 
@@ -38,6 +43,8 @@ def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
     assert timing.source_delay_seconds == 12
     assert timing.detail_delay_seconds == 2.5
     assert timing.login_wait_seconds == 180
+    assert timing.challenge_wait_seconds == 420
+    assert timing.handoff_settle_seconds == 11
     assert timing.run_cooldown_seconds == 1200
     assert timing.blocked_source_cooldown_seconds == 7200
 
@@ -46,13 +53,13 @@ def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
         browser_agent_timing_from_env()
 
 
-def test_login_handoff_waits_for_manual_completion() -> None:
+def test_human_handoff_waits_for_manual_login_completion() -> None:
     page = MagicMock()
     with patch(
         "app.browser_job_agent._page_access_state",
         side_effect=["login_required", "login_required", "ok"],
     ):
-        assert _wait_for_login_handoff(page, 10)
+        assert _wait_for_human_handoff(page, 10)
 
     assert [item.args[0] for item in page.wait_for_timeout.call_args_list] == [
         2_000,
@@ -60,18 +67,33 @@ def test_login_handoff_waits_for_manual_completion() -> None:
     ]
 
 
-def test_login_handoff_stops_after_bounded_timeout() -> None:
+def test_human_handoff_stops_after_bounded_timeout() -> None:
     page = MagicMock()
     with patch(
         "app.browser_job_agent._page_access_state",
         return_value="login_required",
     ):
-        assert not _wait_for_login_handoff(page, 5)
+        assert not _wait_for_human_handoff(page, 5)
 
     assert [item.args[0] for item in page.wait_for_timeout.call_args_list] == [
         2_000,
         2_000,
         1_000,
+    ]
+
+
+def test_human_handoff_waits_on_challenge_without_navigation() -> None:
+    page = MagicMock()
+    with patch(
+        "app.browser_job_agent._page_access_state",
+        side_effect=["challenge_required", "challenge_required", "ok"],
+    ):
+        assert _wait_for_human_handoff(page, 10)
+
+    page.goto.assert_not_called()
+    assert [item.args[0] for item in page.wait_for_timeout.call_args_list] == [
+        2_000,
+        2_000,
     ]
 
 
@@ -96,7 +118,82 @@ def test_access_state_distinguishes_login_rate_limit_and_challenge() -> None:
     assert _page_access_state(page, 429) == "rate_limited"
 
     page.locator.return_value.inner_text.return_value = "Verify you are human"
-    assert _page_access_state(page, 200) == "blocked"
+    assert _page_access_state(page, 200) == "challenge_required"
+
+    page.locator.return_value.inner_text.return_value = "Access denied"
+    assert _page_access_state(page, 403) == "blocked"
+
+
+def test_resolved_challenge_does_not_reload_the_search_page() -> None:
+    page = MagicMock()
+    target_url = "https://tr.indeed.com/jobs?q=backend"
+    page.url = target_url
+    timing = browser_agent_timing_from_env()
+
+    with (
+        patch(
+            "app.browser_job_agent._wait_for_human_handoff",
+            return_value=True,
+        ),
+        patch("app.browser_job_agent._page_access_state", return_value="ok"),
+        patch("app.browser_job_agent._wait_page") as wait,
+    ):
+        state = _resolve_initial_access(
+            page,
+            provider="indeed",
+            target_url=target_url,
+            access_state="challenge_required",
+            timing=timing,
+        )
+
+    assert state == "ok"
+    page.goto.assert_not_called()
+    wait.assert_called_once_with(page, timing.handoff_settle_seconds)
+
+
+def test_resolved_challenge_returns_to_search_at_most_once_when_needed() -> None:
+    page = MagicMock()
+    page.url = "https://tr.indeed.com/"
+    page.goto.return_value.status = 200
+    target_url = "https://tr.indeed.com/jobs?q=backend"
+    timing = browser_agent_timing_from_env()
+
+    with (
+        patch(
+            "app.browser_job_agent._wait_for_human_handoff",
+            return_value=True,
+        ),
+        patch("app.browser_job_agent._page_access_state", return_value="ok"),
+        patch("app.browser_job_agent._wait_page"),
+    ):
+        state = _resolve_initial_access(
+            page,
+            provider="indeed",
+            target_url=target_url,
+            access_state="challenge_required",
+            timing=timing,
+        )
+
+    assert state == "ok"
+    page.goto.assert_called_once_with(
+        target_url,
+        wait_until="domcontentloaded",
+        timeout=25_000,
+    )
+
+
+def test_disabled_provider_env_is_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "BROWSER_AGENT_DISABLED_PROVIDERS",
+        "yenibiris, glassdoor",
+    )
+    assert browser_agent_disabled_providers_from_env() == frozenset(
+        {"yenibiris", "glassdoor"}
+    )
+
+    monkeypatch.setenv("BROWSER_AGENT_DISABLED_PROVIDERS", "unknown-site")
+    with pytest.raises(BrowserAgentError, match="browser_agent_config_invalid"):
+        browser_agent_disabled_providers_from_env()
 
 
 def test_blocked_source_uses_a_bounded_process_cooldown(monkeypatch) -> None:
@@ -316,6 +413,16 @@ def test_browser_role_filter_rejects_unrelated_search_noise() -> None:
     assert browser_role_matches("Machine Learning Engineer", "ML Engineer")
     assert not browser_role_matches("AI Engineer", "Okul Hekimi")
     assert not browser_role_matches("iş analisti", "Proje Lideri")
+
+
+def test_shared_role_catalog_drives_browser_alias_matching() -> None:
+    names = [definition.name for definition in ROLE_CATALOG]
+
+    assert len(names) == len(set(names))
+    assert [group[0] for group in ROLE_ALIAS_GROUPS] == names
+    assert browser_role_matches("Computer Vision Engineer", "CV Engineer")
+    assert browser_role_matches("Kubernetes Engineer", "K8s Engineer")
+    assert browser_role_matches("SAP Consultant", "SAP Danışmanı")
 
 
 def test_remote_only_provider_is_skipped_when_remote_is_not_selected() -> None:

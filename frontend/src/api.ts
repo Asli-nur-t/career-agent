@@ -298,6 +298,7 @@ export type BrowserSourceDiagnostic = {
     | "rate_limited"
     | "blocked"
     | "source_cooldown"
+    | "source_disabled"
     | "failed";
   collected_count: number;
   error_code: string | null;
@@ -352,6 +353,15 @@ export type BrowserCollectedPage = {
 export type BrowserCleanupResponse = {
   repaired_count: number;
   quarantined_count: number;
+};
+
+export type JobRoleCatalogItem = {
+  name: string;
+  aliases: string[];
+};
+
+export type JobAssessmentBackfillResponse = {
+  queued_count: number;
 };
 
 export type BrowserResultDismissResponse = {
@@ -467,6 +477,12 @@ export function getSummary(token: string): Promise<Summary> {
 
 export function getProfiles(token: string): Promise<Profile[]> {
   return request(token, "/operator/profiles");
+}
+
+export function getJobRoleCatalog(
+  token: string,
+): Promise<JobRoleCatalogItem[]> {
+  return request(token, "/operator/job-roles");
 }
 
 export function updateProfileExperience(
@@ -699,6 +715,37 @@ export function cleanupStaleBrowserCollectedJobs(
       limit: 500,
       apply,
       confirmed_cleanup: apply,
+    }),
+  });
+}
+
+export function cleanupRoleMismatchedBrowserJobs(
+  token: string,
+  profile: string,
+  apply = false,
+): Promise<BrowserStaleCleanupResponse> {
+  return request(token, "/operator/browser-agent/results/role-cleanup", {
+    method: "POST",
+    body: JSON.stringify({
+      profile,
+      limit: 500,
+      apply,
+      confirmed_cleanup: apply,
+    }),
+  });
+}
+
+export function queueJobAssessmentBackfill(
+  token: string,
+  profile: string,
+  limit = 25,
+): Promise<JobAssessmentBackfillResponse> {
+  return request(token, "/operator/job-assessments/backfill", {
+    method: "POST",
+    body: JSON.stringify({
+      profile,
+      limit,
+      confirmed_local_processing: true,
     }),
   });
 }

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from app.discovery.safety import safe_text
 from app.discovery.schemas import SearchResult
+from app.job_roles import ROLE_ALIAS_GROUPS
 from app.local_job_agent import LocalJobAgentError, LocalOllamaJobAgent
 from app.manual_job_import import normalize_manual_job_result
 from app.native_job_search import PROVIDER_LABELS, build_provider_search_links
@@ -44,29 +45,6 @@ _REMOTE_ONLY_PROVIDERS = {
 }
 
 _WORK_MODES = {"remote", "hybrid", "onsite"}
-
-_ROLE_ALIAS_GROUPS = (
-    ("ai engineer", "ai engineering", "artificial intelligence engineer", "yapay zeka muhendisi", "yapay zeka stajyeri"),
-    ("machine learning engineer", "ml engineer", "makine ogrenmesi muhendisi"),
-    ("genai engineer", "generative ai engineer", "generative artificial intelligence engineer"),
-    ("rag engineer", "retrieval augmented generation engineer"),
-    ("nlp engineer", "natural language processing engineer", "dogal dil isleme muhendisi"),
-    ("data scientist", "veri bilimci", "veri bilimi uzmani"),
-    ("data engineer", "veri muhendisi"),
-    ("data analyst", "veri analisti"),
-    ("business analyst", "it business analyst", "is analisti", "bilgi teknolojileri is analisti"),
-    ("product analyst", "urun analisti"),
-    ("system analyst", "systems analyst", "sistem analisti"),
-    ("software engineer", "software developer", "yazilim muhendisi", "yazilim gelistirici"),
-    ("backend engineer", "backend developer", "back end engineer", "back end developer"),
-    ("frontend engineer", "frontend developer", "front end engineer", "front end developer"),
-    ("full stack engineer", "full stack developer", "fullstack engineer", "fullstack developer"),
-    ("devops engineer", "devops specialist"),
-    ("mlops engineer", "mlops specialist"),
-    ("qa engineer", "quality assurance engineer", "software test engineer", "test automation engineer"),
-    ("site reliability engineer", "sre engineer"),
-    ("platform engineer", "platform developer"),
-)
 
 _ROLE_NOISE_TOKENS = {
     "junior",
@@ -140,13 +118,24 @@ _CHALLENGE_URL_MARKERS = (
 _CHALLENGE_BODY_MARKERS = (
     "captcha",
     "verify you are human",
+    "confirm you are human",
+    "are you a human",
+    "press and hold",
     "security verification",
+    "additional verification required",
+    "checking your browser",
+    "just a moment",
     "unusual activity",
     "automated requests",
-    "access denied",
     "robot olmadığınızı",
     "güvenlik doğrulaması",
     "olağandışı etkinlik",
+)
+
+_BLOCKED_BODY_MARKERS = (
+    "access denied",
+    "request forbidden",
+    "erişim reddedildi",
 )
 
 _PROVIDER_LOGIN_URLS = {
@@ -236,6 +225,8 @@ class BrowserAgentTiming:
     source_delay_seconds: float
     detail_delay_seconds: float
     login_wait_seconds: float
+    challenge_wait_seconds: float
+    handoff_settle_seconds: float
     run_cooldown_seconds: float
     blocked_source_cooldown_seconds: float
 
@@ -355,6 +346,16 @@ def browser_agent_timing_from_env() -> BrowserAgentTiming:
             default=120.0,
             maximum=600.0,
         ),
+        challenge_wait_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS",
+            default=300.0,
+            maximum=900.0,
+        ),
+        handoff_settle_seconds=_bounded_env_seconds(
+            "BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS",
+            default=8.0,
+            maximum=60.0,
+        ),
         run_cooldown_seconds=_bounded_env_seconds(
             "BROWSER_AGENT_RUN_COOLDOWN_SECONDS",
             default=900.0,
@@ -368,6 +369,20 @@ def browser_agent_timing_from_env() -> BrowserAgentTiming:
     )
 
 
+def browser_agent_disabled_providers_from_env() -> frozenset[str]:
+    """Return explicitly disabled allowlisted providers, rejecting typos."""
+
+    raw_value = os.getenv("BROWSER_AGENT_DISABLED_PROVIDERS", "")
+    providers = {
+        item.strip().casefold()
+        for item in raw_value.split(",")
+        if item.strip()
+    }
+    if not providers <= set(BROWSER_AGENT_PROVIDERS):
+        raise BrowserAgentError("browser_agent_config_invalid")
+    return frozenset(providers)
+
+
 def _wait_page(page: object, seconds: float) -> None:
     if seconds <= 0:
         return
@@ -378,20 +393,30 @@ def _wait_page(page: object, seconds: float) -> None:
         time.sleep(seconds)
 
 
-def _wait_for_login_handoff(page: object, wait_seconds: float) -> bool:
-    """Pause for manual login; never enter credentials or bypass a challenge."""
+def _wait_for_human_handoff(page: object, wait_seconds: float) -> bool:
+    """Pause without navigation while a human completes login or verification."""
 
     remaining = max(0.0, wait_seconds)
     while remaining > 0:
         state = _page_access_state(page)
         if state == "ok":
             return True
-        if state != "login_required":
+        if state not in {"login_required", "challenge_required"}:
             return False
         interval = min(2.0, remaining)
         _wait_page(page, interval)
         remaining -= interval
     return _page_access_state(page) == "ok"
+
+
+def _same_navigation_target(current_url: str, target_url: str) -> bool:
+    current = urlsplit(safe_text(current_url, 2_048))
+    target = urlsplit(safe_text(target_url, 2_048))
+    return (
+        (current.hostname or "").casefold()
+        == (target.hostname or "").casefold()
+        and current.path.rstrip("/") == target.path.rstrip("/")
+    )
 
 
 def _defer_blocked_source(provider: str, cooldown_seconds: float) -> None:
@@ -739,7 +764,7 @@ def browser_role_matches(requested_role: str, title: str) -> bool:
     if requested in actual:
         return True
 
-    for aliases in _ROLE_ALIAS_GROUPS:
+    for aliases in ROLE_ALIAS_GROUPS:
         normalized_aliases = tuple(_search_normalized(alias) for alias in aliases)
         if any(alias in requested for alias in normalized_aliases):
             return any(alias in actual for alias in normalized_aliases)
@@ -802,10 +827,12 @@ def _page_access_state(
         marker in text for marker in _RATE_LIMIT_MARKERS
     ):
         return "rate_limited"
-    if response_status == 403:
-        return "blocked"
     if any(marker in current_url for marker in _CHALLENGE_URL_MARKERS) or any(
         marker in text for marker in _CHALLENGE_BODY_MARKERS
+    ):
+        return "challenge_required"
+    if response_status == 403 or any(
+        marker in text for marker in _BLOCKED_BODY_MARKERS
     ):
         return "blocked"
     if response_status == 401:
@@ -822,7 +849,83 @@ def _access_diagnostic(state: str) -> tuple[str, str]:
         return "rate_limited", "browser_source_rate_limited"
     if state == "blocked":
         return "blocked", "browser_source_security_challenge"
+    if state == "challenge_required":
+        return "blocked", "browser_source_human_verification_timeout"
     return "login_required", "browser_source_login_required"
+
+
+def _wait_for_interactive_access(
+    page: object,
+    *,
+    access_state: str,
+    timing: BrowserAgentTiming,
+) -> str:
+    if access_state not in {"login_required", "challenge_required"}:
+        return access_state
+    wait_seconds = (
+        timing.challenge_wait_seconds
+        if access_state == "challenge_required"
+        else timing.login_wait_seconds
+    )
+    if not _wait_for_human_handoff(page, wait_seconds):
+        return _page_access_state(page)
+    _wait_page(page, timing.handoff_settle_seconds)
+    return _page_access_state(page)
+
+
+def _resolve_initial_access(
+    page: object,
+    *,
+    provider: str,
+    target_url: str,
+    access_state: str,
+    timing: BrowserAgentTiming,
+) -> str:
+    """Hand control to the user without repeatedly reloading challenge pages."""
+
+    if access_state == "login_required":
+        login_url = _PROVIDER_LOGIN_URLS.get(provider)
+        if login_url and not _same_navigation_target(
+            safe_text(getattr(page, "url", ""), 2_048),
+            login_url,
+        ):
+            response = page.goto(
+                login_url,
+                wait_until="domcontentloaded",
+                timeout=25_000,
+            )
+            _wait_page(page, timing.page_settle_seconds)
+            access_state = _page_access_state(
+                page,
+                _response_status(response),
+            )
+
+    access_state = _wait_for_interactive_access(
+        page,
+        access_state=access_state,
+        timing=timing,
+    )
+    if access_state != "ok":
+        return access_state
+
+    current_url = safe_text(getattr(page, "url", ""), 2_048)
+    if not _same_navigation_target(current_url, target_url):
+        response = page.goto(
+            target_url,
+            wait_until="domcontentloaded",
+            timeout=25_000,
+        )
+        _wait_page(page, timing.page_settle_seconds)
+        access_state = _page_access_state(
+            page,
+            _response_status(response),
+        )
+        access_state = _wait_for_interactive_access(
+            page,
+            access_state=access_state,
+            timing=timing,
+        )
+    return access_state
 
 
 def _control_label(locator: object) -> str:
@@ -1098,7 +1201,11 @@ def _enrich_job_descriptions(
                         detail_page,
                         _response_status(response),
                     )
-                    if access_state in {"rate_limited", "blocked"}:
+                    if access_state in {
+                        "rate_limited",
+                        "blocked",
+                        "challenge_required",
+                    }:
                         _defer_blocked_source(
                             job.provider,
                             blocked_source_cooldown_seconds,
@@ -1224,6 +1331,7 @@ def collect_browser_jobs(
     if not allowed_work_modes or not allowed_work_modes <= _WORK_MODES:
         raise ValueError("browser_work_modes_invalid")
     timing = browser_agent_timing_from_env()
+    disabled_providers = browser_agent_disabled_providers_from_env()
     links = build_provider_search_links(
         role=role,
         location=location,
@@ -1276,6 +1384,19 @@ def collect_browser_jobs(
             context.set_default_timeout(8_000)
             initial_page = context.pages[0] if context.pages else None
             for link_index, link in enumerate(links):
+                if link.provider in disabled_providers:
+                    diagnostics.append(
+                        BrowserSourceDiagnostic(
+                            link.provider,
+                            link.label,
+                            "source_disabled",
+                            0,
+                            "browser_source_disabled_by_operator",
+                            False,
+                            0,
+                        )
+                    )
+                    continue
                 if not browser_provider_matches_work_modes(
                     link.provider,
                     allowed_work_modes,
@@ -1321,40 +1442,23 @@ def collect_browser_jobs(
                         page,
                         _response_status(response),
                     )
-                    if access_state == "login_required":
-                        login_url = _PROVIDER_LOGIN_URLS.get(link.provider)
-                        if login_url:
-                            login_response = page.goto(
-                                login_url,
-                                wait_until="domcontentloaded",
-                                timeout=25_000,
-                            )
-                            _wait_page(page, timing.page_settle_seconds)
-                            access_state = _page_access_state(
-                                page,
-                                _response_status(login_response),
-                            )
-                        login_completed = (
-                            _wait_for_login_handoff(
-                                page,
-                                timing.login_wait_seconds,
-                            )
-                            if access_state == "login_required"
-                            else access_state == "ok"
+                    if access_state in {
+                        "login_required",
+                        "challenge_required",
+                    }:
+                        access_state = _resolve_initial_access(
+                            page,
+                            provider=link.provider,
+                            target_url=link.url,
+                            access_state=access_state,
+                            timing=timing,
                         )
-                        if login_completed:
-                            response = page.goto(
-                                link.url,
-                                wait_until="domcontentloaded",
-                                timeout=25_000,
-                            )
-                            _wait_page(page, timing.page_settle_seconds)
-                            access_state = _page_access_state(
-                                page,
-                                _response_status(response),
-                            )
                     if access_state != "ok":
-                        if access_state in {"rate_limited", "blocked"}:
+                        if access_state in {
+                            "rate_limited",
+                            "blocked",
+                            "challenge_required",
+                        }:
                             _defer_blocked_source(
                                 link.provider,
                                 timing.blocked_source_cooldown_seconds,
@@ -1422,7 +1526,11 @@ def collect_browser_jobs(
                         )
                     else:
                         access_state = _page_access_state(page)
-                        if access_state in {"rate_limited", "blocked"}:
+                        if access_state in {
+                            "rate_limited",
+                            "blocked",
+                            "challenge_required",
+                        }:
                             _defer_blocked_source(
                                 link.provider,
                                 timing.blocked_source_cooldown_seconds,
