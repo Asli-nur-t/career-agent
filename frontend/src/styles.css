@@ -361,6 +361,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .browser-diagnostics > div { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: white; font-size: 10px; }
 .browser-diagnostics > div b { color: var(--ink); }
 .browser-diagnostics > div span { color: var(--muted); }
+.browser-diagnostics .access-reason { color: #765850; overflow-wrap: anywhere; }
+.browser-diagnostics .access-trace { color: var(--green); overflow-wrap: anywhere; }
 .browser-diagnostics > div.collected { border-color: #a8d8c1; background: #eef8f2; }
 .browser-diagnostics > div.login_required, .browser-diagnostics > div.rate_limited, .browser-diagnostics > div.source_cooldown, .browser-diagnostics > div.source_disabled, .browser-diagnostics > div.failed { border-color: #ead39a; background: #fff7df; }
 .browser-diagnostics > div.blocked { border-color: #e4b5ae; background: #fff0ed; }

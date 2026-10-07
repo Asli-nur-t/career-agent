@@ -528,6 +528,8 @@ class BrowserSourceDiagnosticItem(BaseModel):
     error_code: str | None
     agent_used: bool = False
     agent_action_count: int = Field(default=0, ge=0, le=10)
+    access_reason: str | None = Field(default=None, max_length=200)
+    access_trace: list[str] = Field(default_factory=list, max_length=12)
 
 
 class BrowserCollectResponse(BaseModel):
@@ -3077,6 +3079,8 @@ def operator_browser_collect(
                 error_code=item.error_code,
                 agent_used=item.agent_used,
                 agent_action_count=item.agent_action_count,
+                access_reason=item.access_reason,
+                access_trace=list(item.access_trace),
             )
             for item in collection.diagnostics
         ],

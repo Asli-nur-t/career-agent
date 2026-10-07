@@ -131,6 +131,36 @@ function label(value: string): string {
   return labels[value] ?? value.replaceAll("_", " ");
 }
 
+function browserAccessReason(value: string): string {
+  const [kind, marker = ""] = value.split(":", 2);
+  const prefixes: Record<string, string> = {
+    http_status: "HTTP durumu",
+    body_rate_limit: "Sayfa metni / istek sınırı",
+    url_challenge: "Adres / güvenlik kontrolü",
+    body_challenge: "Sayfa metni / güvenlik kontrolü",
+    body_blocked: "Sayfa metni / erişim engeli",
+    url_login: "Adres / giriş ekranı",
+    body_login: "Sayfa metni / giriş ekranı",
+    legacy_resolution: "Eski erişim akışı",
+    page_ready: "Sayfa erişilebilir",
+  };
+  return marker ? `${prefixes[kind] ?? kind}: ${marker}` : (prefixes[kind] ?? value);
+}
+
+function browserAccessTrace(values: string[]): string {
+  const nodeLabels: Record<string, string> = {
+    fetch_page: "sayfayı aç",
+    classify: "durumu sınıflandır",
+    wait_for_human: "insan doğrulamasını bekle",
+    retry_navigation: "hedefe bir kez dön",
+    defer_source: "kaynağı ertele",
+    proceed: "devam et",
+  };
+  return values
+    .map((value) => nodeLabels[value.split(":", 1)[0]] ?? value)
+    .join(" → ");
+}
+
 function confidenceLevel(value: "low" | "medium" | "high" | null): string {
   if (value === "high") return "Yüksek";
   if (value === "medium") return "Orta";
@@ -1136,6 +1166,8 @@ function GeneralSearchView({
                   <b>{item.label}</b>
                   <span>{item.error_code === "browser_source_work_mode_excluded" ? "Çalışma biçimi dışında" : item.outcome === "collected" ? `${item.collected_count} ilan` : item.outcome === "login_required" ? "Giriş gerekli" : item.outcome === "rate_limited" ? "İstek sınırı" : item.outcome === "blocked" ? "Güvenlik kontrolü" : item.outcome === "source_cooldown" ? "Kaynak beklemede" : item.outcome === "source_disabled" ? "Operatör kapattı" : item.outcome === "failed" ? "Açılamadı" : "Sonuç yok"}</span>
                   <small>{item.error_code === "browser_source_work_mode_excluded" ? "Remote seçili olmadığı için bu kaynak açılmadı" : item.error_code === "browser_source_human_verification_timeout" ? "Sayfa yenilenmeden doğrulama beklendi; tanınan süre doldu" : item.outcome === "source_disabled" ? "BROWSER_AGENT_DISABLED_PROVIDERS ayarından çıkarılana kadar açılmayacak" : item.outcome === "login_required" ? "Açılan pencerede giriş yap; parola uygulamaya verilmez" : item.outcome === "rate_limited" || item.outcome === "blocked" || item.outcome === "source_cooldown" ? "Kaynak korunmak için otomatik atlandı" : item.agent_used ? `Qwen ajanı · ${item.agent_action_count} araç işlemi` : item.error_code?.startsWith("local_agent_") ? "Kurallı yedek kullanıldı" : "Hazır bağlantı kullanıldı"}</small>
+                  {item.access_reason && <small className="access-reason">Tetikleyici: {browserAccessReason(item.access_reason)}</small>}
+                  {item.access_trace.length > 0 && <small className="access-trace">LangGraph: {browserAccessTrace(item.access_trace)}</small>}
                 </div>
               ))}
             </div>

@@ -3,15 +3,19 @@ from unittest.mock import MagicMock, patch
 
 import app.browser_job_agent as browser_agent_module
 
+from app.browser_access_graph import AccessObservation
 from app.browser_job_agent import (
     BrowserAgentError,
     _card_fields,
     _defer_blocked_source,
     _is_safe_filter_control,
     _page_access_state,
+    _page_access_observation,
+    _resolve_access_with_graph,
     _resolve_initial_access,
     _source_cooldown_remaining,
     _wait_for_human_handoff,
+    browser_access_graph_providers_from_env,
     browser_agent_disabled_providers_from_env,
     browser_agent_timing_from_env,
     browser_job_matches_scope,
@@ -56,8 +60,12 @@ def test_browser_agent_timing_is_configurable_and_bounded(monkeypatch) -> None:
 def test_human_handoff_waits_for_manual_login_completion() -> None:
     page = MagicMock()
     with patch(
-        "app.browser_job_agent._page_access_state",
-        side_effect=["login_required", "login_required", "ok"],
+        "app.browser_job_agent._page_access_observation",
+        side_effect=[
+            AccessObservation("login_required", "url_login:/login", "https://example/login"),
+            AccessObservation("login_required", "url_login:/login", "https://example/login"),
+            AccessObservation("ok", "page_ready", "https://example/jobs"),
+        ],
     ):
         assert _wait_for_human_handoff(page, 10)
 
@@ -70,8 +78,10 @@ def test_human_handoff_waits_for_manual_login_completion() -> None:
 def test_human_handoff_stops_after_bounded_timeout() -> None:
     page = MagicMock()
     with patch(
-        "app.browser_job_agent._page_access_state",
-        return_value="login_required",
+        "app.browser_job_agent._page_access_observation",
+        return_value=AccessObservation(
+            "login_required", "url_login:/login", "https://example/login"
+        ),
     ):
         assert not _wait_for_human_handoff(page, 5)
 
@@ -85,8 +95,16 @@ def test_human_handoff_stops_after_bounded_timeout() -> None:
 def test_human_handoff_waits_on_challenge_without_navigation() -> None:
     page = MagicMock()
     with patch(
-        "app.browser_job_agent._page_access_state",
-        side_effect=["challenge_required", "challenge_required", "ok"],
+        "app.browser_job_agent._page_access_observation",
+        side_effect=[
+            AccessObservation(
+                "challenge_required", "body_challenge:captcha", "https://example/jobs"
+            ),
+            AccessObservation(
+                "challenge_required", "body_challenge:captcha", "https://example/jobs"
+            ),
+            AccessObservation("ok", "page_ready", "https://example/jobs"),
+        ],
     ):
         assert _wait_for_human_handoff(page, 10)
 
@@ -124,6 +142,18 @@ def test_access_state_distinguishes_login_rate_limit_and_challenge() -> None:
     assert _page_access_state(page, 403) == "blocked"
 
 
+def test_access_observation_reports_the_static_trigger_only() -> None:
+    page = MagicMock()
+    page.url = "https://tr.indeed.com/jobs?q=private-search"
+    page.locator.return_value.inner_text.return_value = "Verify you are human"
+
+    observation = _page_access_observation(page, 200)
+
+    assert observation.state == "challenge_required"
+    assert observation.reason == "body_challenge:verify you are human"
+    assert "private-search" not in observation.reason
+
+
 def test_resolved_challenge_does_not_reload_the_search_page() -> None:
     page = MagicMock()
     target_url = "https://tr.indeed.com/jobs?q=backend"
@@ -149,6 +179,54 @@ def test_resolved_challenge_does_not_reload_the_search_page() -> None:
     assert state == "ok"
     page.goto.assert_not_called()
     wait.assert_called_once_with(page, timing.handoff_settle_seconds)
+
+
+def test_access_graph_resolution_keeps_live_page_outside_state() -> None:
+    page = MagicMock()
+    target_url = "https://tr.indeed.com/jobs?q=backend"
+    page.url = target_url
+    page.goto.return_value.status = 200
+    timing = browser_agent_timing_from_env()
+
+    with (
+        patch(
+            "app.browser_job_agent._wait_for_human_access",
+            return_value=AccessObservation("ok", "page_ready", target_url),
+        ),
+        patch(
+            "app.browser_job_agent._page_access_observation",
+            side_effect=[
+                AccessObservation(
+                    "challenge_required",
+                    "body_challenge:captcha",
+                    target_url,
+                ),
+                AccessObservation("ok", "page_ready", target_url),
+            ],
+        ),
+        patch("app.browser_job_agent._wait_page"),
+    ):
+        result = _resolve_access_with_graph(
+            page,
+            provider="indeed",
+            target_url=target_url,
+            timing=timing,
+        )
+
+    assert result.ready
+    assert result.access_state == "ok"
+    assert result.transition_trace == (
+        "fetch_page",
+        "classify:challenge_required:body_challenge:captcha",
+        "wait_for_human",
+        "classify:ok:page_ready",
+        "proceed",
+    )
+    page.goto.assert_called_once_with(
+        target_url,
+        wait_until="domcontentloaded",
+        timeout=25_000,
+    )
 
 
 def test_resolved_challenge_returns_to_search_at_most_once_when_needed() -> None:
@@ -194,6 +272,23 @@ def test_disabled_provider_env_is_allowlisted(monkeypatch) -> None:
     monkeypatch.setenv("BROWSER_AGENT_DISABLED_PROVIDERS", "unknown-site")
     with pytest.raises(BrowserAgentError, match="browser_agent_config_invalid"):
         browser_agent_disabled_providers_from_env()
+
+
+def test_access_graph_provider_pilot_is_allowlisted(monkeypatch) -> None:
+    monkeypatch.delenv("BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS", raising=False)
+    assert browser_access_graph_providers_from_env() == frozenset({"indeed"})
+
+    monkeypatch.setenv(
+        "BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS",
+        "indeed,glassdoor",
+    )
+    assert browser_access_graph_providers_from_env() == frozenset(
+        {"indeed", "glassdoor"}
+    )
+
+    monkeypatch.setenv("BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS", "evil-site")
+    with pytest.raises(BrowserAgentError, match="browser_agent_config_invalid"):
+        browser_access_graph_providers_from_env()
 
 
 def test_blocked_source_uses_a_bounded_process_cooldown(monkeypatch) -> None:
@@ -438,3 +533,4 @@ def test_remote_only_provider_is_skipped_when_remote_is_not_selected() -> None:
         "kariyer",
         {"hybrid", "onsite"},
     )
+    browser_access_graph_providers_from_env,

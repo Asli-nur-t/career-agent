@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
+from app.browser_access_graph import (
+    AccessObservation,
+    AccessState,
+    BrowserAccessGraph,
+)
 from app.discovery.safety import safe_text
 from app.discovery.schemas import SearchResult
 from app.job_roles import ROLE_ALIAS_GROUPS
@@ -209,6 +214,8 @@ class BrowserSourceDiagnostic:
     error_code: str | None = None
     agent_used: bool = False
     agent_action_count: int = 0
+    access_reason: str | None = None
+    access_trace: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -229,6 +236,16 @@ class BrowserAgentTiming:
     handoff_settle_seconds: float
     run_cooldown_seconds: float
     blocked_source_cooldown_seconds: float
+
+
+@dataclass(frozen=True)
+class BrowserAccessResolution:
+    ready: bool
+    access_state: AccessState
+    access_reason: str
+    outcome: str | None = None
+    error_code: str | None = None
+    transition_trace: tuple[str, ...] = ()
 
 
 @dataclass
@@ -383,6 +400,20 @@ def browser_agent_disabled_providers_from_env() -> frozenset[str]:
     return frozenset(providers)
 
 
+def browser_access_graph_providers_from_env() -> frozenset[str]:
+    """Return the allowlisted providers using the access-graph pilot."""
+
+    raw_value = os.getenv("BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS", "indeed")
+    providers = {
+        item.strip().casefold()
+        for item in raw_value.split(",")
+        if item.strip()
+    }
+    if not providers <= set(BROWSER_AGENT_PROVIDERS):
+        raise BrowserAgentError("browser_agent_config_invalid")
+    return frozenset(providers)
+
+
 def _wait_page(page: object, seconds: float) -> None:
     if seconds <= 0:
         return
@@ -393,20 +424,30 @@ def _wait_page(page: object, seconds: float) -> None:
         time.sleep(seconds)
 
 
-def _wait_for_human_handoff(page: object, wait_seconds: float) -> bool:
-    """Pause without navigation while a human completes login or verification."""
+def _wait_for_human_access(
+    page: object,
+    wait_seconds: float,
+) -> AccessObservation:
+    """Pause without navigation and return the final classified observation."""
 
     remaining = max(0.0, wait_seconds)
+    observation = _page_access_observation(page)
     while remaining > 0:
-        state = _page_access_state(page)
-        if state == "ok":
-            return True
-        if state not in {"login_required", "challenge_required"}:
-            return False
+        if observation.state == "ok":
+            return observation
+        if observation.state not in {"login_required", "challenge_required"}:
+            return observation
         interval = min(2.0, remaining)
         _wait_page(page, interval)
         remaining -= interval
-    return _page_access_state(page) == "ok"
+        observation = _page_access_observation(page)
+    return observation
+
+
+def _wait_for_human_handoff(page: object, wait_seconds: float) -> bool:
+    """Compatibility wrapper used by the legacy access path."""
+
+    return _wait_for_human_access(page, wait_seconds).state == "ok"
 
 
 def _same_navigation_target(current_url: str, target_url: str) -> bool:
@@ -815,33 +856,77 @@ def _response_status(response: object | None) -> int | None:
     return None
 
 
+def _first_marker(text: str, markers: tuple[str, ...]) -> str | None:
+    return next((marker for marker in markers if marker in text), None)
+
+
+def _page_access_observation(
+    page: object,
+    response_status: int | None = None,
+) -> AccessObservation:
+    """Classify access and retain only a static, non-sensitive trigger code."""
+
+    current_url = safe_text(getattr(page, "url", ""), 2048)
+    normalized_url = current_url.casefold()
+    text = _page_body_text(page)
+    marker = _first_marker(text, _RATE_LIMIT_MARKERS)
+    if response_status == 429:
+        return AccessObservation("rate_limited", "http_status:429", current_url)
+    if marker:
+        return AccessObservation(
+            "rate_limited",
+            f"body_rate_limit:{marker}",
+            current_url,
+        )
+    marker = _first_marker(normalized_url, _CHALLENGE_URL_MARKERS)
+    if marker:
+        return AccessObservation(
+            "challenge_required",
+            f"url_challenge:{marker}",
+            current_url,
+        )
+    marker = _first_marker(text, _CHALLENGE_BODY_MARKERS)
+    if marker:
+        return AccessObservation(
+            "challenge_required",
+            f"body_challenge:{marker}",
+            current_url,
+        )
+    marker = _first_marker(text, _BLOCKED_BODY_MARKERS)
+    if response_status == 403:
+        return AccessObservation("blocked", "http_status:403", current_url)
+    if marker:
+        return AccessObservation(
+            "blocked",
+            f"body_blocked:{marker}",
+            current_url,
+        )
+    if response_status == 401:
+        return AccessObservation("login_required", "http_status:401", current_url)
+    marker = _first_marker(normalized_url, _LOGIN_URL_MARKERS)
+    if marker:
+        return AccessObservation(
+            "login_required",
+            f"url_login:{marker}",
+            current_url,
+        )
+    marker = _first_marker(text, _LOGIN_BODY_MARKERS)
+    if marker:
+        return AccessObservation(
+            "login_required",
+            f"body_login:{marker}",
+            current_url,
+        )
+    return AccessObservation("ok", "page_ready", current_url)
+
+
 def _page_access_state(
     page: object,
     response_status: int | None = None,
 ) -> str:
     """Classify access without treating a normal header login link as a wall."""
 
-    current_url = safe_text(getattr(page, "url", ""), 2048).casefold()
-    text = _page_body_text(page)
-    if response_status == 429 or any(
-        marker in text for marker in _RATE_LIMIT_MARKERS
-    ):
-        return "rate_limited"
-    if any(marker in current_url for marker in _CHALLENGE_URL_MARKERS) or any(
-        marker in text for marker in _CHALLENGE_BODY_MARKERS
-    ):
-        return "challenge_required"
-    if response_status == 403 or any(
-        marker in text for marker in _BLOCKED_BODY_MARKERS
-    ):
-        return "blocked"
-    if response_status == 401:
-        return "login_required"
-    if any(marker in current_url for marker in _LOGIN_URL_MARKERS) or any(
-        marker in text for marker in _LOGIN_BODY_MARKERS
-    ):
-        return "login_required"
-    return "ok"
+    return _page_access_observation(page, response_status).state
 
 
 def _access_diagnostic(state: str) -> tuple[str, str]:
@@ -926,6 +1011,67 @@ def _resolve_initial_access(
             timing=timing,
         )
     return access_state
+
+
+def _resolve_access_with_graph(
+    page: object,
+    *,
+    provider: str,
+    target_url: str,
+    timing: BrowserAgentTiming,
+) -> BrowserAccessResolution:
+    """Run the bounded LangGraph pilot while keeping ``page`` out of state."""
+
+    def wait_for_human(access_state: AccessState) -> AccessObservation:
+        wait_seconds = (
+            timing.challenge_wait_seconds
+            if access_state == "challenge_required"
+            else timing.login_wait_seconds
+        )
+        observation = _wait_for_human_access(page, wait_seconds)
+        if observation.state == "ok":
+            _wait_page(page, timing.handoff_settle_seconds)
+            observation = _page_access_observation(page)
+        return observation
+
+    def open_target() -> AccessObservation:
+        response = page.goto(
+            target_url,
+            wait_until="domcontentloaded",
+            timeout=25_000,
+        )
+        _wait_page(page, timing.page_settle_seconds)
+        return _page_access_observation(page, _response_status(response))
+
+    def navigate_to_target() -> AccessObservation:
+        current_url = safe_text(getattr(page, "url", ""), 2_048)
+        if _same_navigation_target(current_url, target_url):
+            return _page_access_observation(page)
+        return open_target()
+
+    graph = BrowserAccessGraph(
+        fetch_page=open_target,
+        wait_for_human=wait_for_human,
+        navigate_to_target=navigate_to_target,
+        is_target_page=lambda: _same_navigation_target(
+            safe_text(getattr(page, "url", ""), 2_048),
+            target_url,
+        ),
+        max_handoff_attempts=1,
+        max_navigation_attempts=1,
+    )
+    result = graph.run(
+        provider=provider,
+        target_url=target_url,
+    )
+    return BrowserAccessResolution(
+        ready=result.get("decision") == "proceed",
+        access_state=result["access_state"],
+        access_reason=result["access_reason"],
+        outcome=result.get("outcome"),
+        error_code=result.get("error_code") or None,
+        transition_trace=tuple(result["transition_trace"]),
+    )
 
 
 def _control_label(locator: object) -> str:
@@ -1332,6 +1478,7 @@ def collect_browser_jobs(
         raise ValueError("browser_work_modes_invalid")
     timing = browser_agent_timing_from_env()
     disabled_providers = browser_agent_disabled_providers_from_env()
+    access_graph_providers = browser_access_graph_providers_from_env()
     links = build_provider_search_links(
         role=role,
         location=location,
@@ -1432,29 +1579,57 @@ def collect_browser_jobs(
                             )
                         )
                         continue
-                    response = page.goto(
-                        link.url,
-                        wait_until="domcontentloaded",
-                        timeout=25_000,
-                    )
-                    _wait_page(page, timing.page_settle_seconds)
-                    access_state = _page_access_state(
-                        page,
-                        _response_status(response),
-                    )
-                    if access_state in {
-                        "login_required",
-                        "challenge_required",
-                    }:
-                        access_state = _resolve_initial_access(
+                    if link.provider in access_graph_providers:
+                        resolution = _resolve_access_with_graph(
                             page,
                             provider=link.provider,
                             target_url=link.url,
-                            access_state=access_state,
                             timing=timing,
                         )
-                    if access_state != "ok":
+                    else:
+                        response = page.goto(
+                            link.url,
+                            wait_until="domcontentloaded",
+                            timeout=25_000,
+                        )
+                        _wait_page(page, timing.page_settle_seconds)
+                        observation = _page_access_observation(
+                            page,
+                            _response_status(response),
+                        )
+                        access_state = observation.state
                         if access_state in {
+                            "login_required",
+                            "challenge_required",
+                        }:
+                            access_state = _resolve_initial_access(
+                                page,
+                                provider=link.provider,
+                                target_url=link.url,
+                                access_state=access_state,
+                                timing=timing,
+                            )
+                        final_observation = _page_access_observation(page)
+                        if access_state != final_observation.state:
+                            final_observation = AccessObservation(
+                                access_state,
+                                f"legacy_resolution:{access_state}",
+                                final_observation.current_url,
+                            )
+                        outcome, error_code = (
+                            _access_diagnostic(access_state)
+                            if access_state != "ok"
+                            else (None, None)
+                        )
+                        resolution = BrowserAccessResolution(
+                            ready=access_state == "ok",
+                            access_state=access_state,
+                            access_reason=final_observation.reason,
+                            outcome=outcome,
+                            error_code=error_code,
+                        )
+                    if not resolution.ready:
+                        if resolution.access_state in {
                             "rate_limited",
                             "blocked",
                             "challenge_required",
@@ -1463,16 +1638,17 @@ def collect_browser_jobs(
                                 link.provider,
                                 timing.blocked_source_cooldown_seconds,
                             )
-                        outcome, error_code = _access_diagnostic(access_state)
                         diagnostics.append(
                             BrowserSourceDiagnostic(
                                 link.provider,
                                 link.label,
-                                outcome,
+                                resolution.outcome or "failed",
                                 0,
-                                error_code,
+                                resolution.error_code,
                                 False,
                                 0,
+                                resolution.access_reason,
+                                resolution.transition_trace,
                             )
                         )
                         continue
@@ -1489,11 +1665,20 @@ def collect_browser_jobs(
                         except LocalJobAgentError as error:
                             agent_error_code = str(error)
                             if agent_error_code == "local_agent_navigation_rejected":
-                                page.goto(
-                                    link.url,
-                                    wait_until="domcontentloaded",
-                                    timeout=25_000,
+                                diagnostics.append(
+                                    BrowserSourceDiagnostic(
+                                        link.provider,
+                                        link.label,
+                                        "failed",
+                                        0,
+                                        agent_error_code,
+                                        False,
+                                        agent_action_count,
+                                        "agent_cross_origin_navigation",
+                                        resolution.transition_trace,
+                                    )
                                 )
+                                continue
                     jobs = _collect_page_jobs(
                         page,
                         provider=link.provider,
@@ -1522,11 +1707,13 @@ def collect_browser_jobs(
                                 agent_error_code,
                                 agent_used,
                                 agent_action_count,
+                                resolution.access_reason,
+                                resolution.transition_trace,
                             )
                         )
                     else:
-                        access_state = _page_access_state(page)
-                        if access_state in {
+                        observation = _page_access_observation(page)
+                        if observation.state in {
                             "rate_limited",
                             "blocked",
                             "challenge_required",
@@ -1536,8 +1723,8 @@ def collect_browser_jobs(
                                 timing.blocked_source_cooldown_seconds,
                             )
                         outcome, access_error_code = (
-                            _access_diagnostic(access_state)
-                            if access_state != "ok"
+                            _access_diagnostic(observation.state)
+                            if observation.state != "ok"
                             else ("no_results", "browser_source_no_results")
                         )
                         diagnostics.append(
@@ -1549,6 +1736,8 @@ def collect_browser_jobs(
                                 agent_error_code or access_error_code,
                                 agent_used,
                                 agent_action_count,
+                                observation.reason,
+                                resolution.transition_trace,
                             )
                         )
                 except (PlaywrightError, PlaywrightTimeoutError, OSError):

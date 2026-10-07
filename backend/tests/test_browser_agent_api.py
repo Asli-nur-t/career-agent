@@ -23,8 +23,11 @@ from app.operator_api import (
     BrowserStaleCleanupResponse,
     ImportManualJobResponse,
     _candidate_search_roles,
+    assess_profile_search_run_candidates,
     cleanup_browser_collected_jobs,
+    cleanup_role_mismatched_browser_jobs,
     cleanup_stale_unassessed_browser_jobs,
+    load_assessable_candidate_ids,
 )
 
 
@@ -74,7 +77,14 @@ def test_browser_agent_collects_and_imports_bounded_results(monkeypatch) -> None
     collected = BrowserCollection(
         jobs=(listing,),
         diagnostics=(
-            BrowserSourceDiagnostic("linkedin", "LinkedIn", "collected", 1),
+            BrowserSourceDiagnostic(
+                "linkedin",
+                "LinkedIn",
+                "collected",
+                1,
+                access_reason="page_ready",
+                access_trace=("classify:ok:page_ready", "proceed"),
+            ),
         ),
     )
     with (
@@ -83,7 +93,7 @@ def test_browser_agent_collects_and_imports_bounded_results(monkeypatch) -> None
             "app.operator_api.import_manual_job_candidate",
             return_value=imported,
         ) as import_job,
-        patch("app.operator_api.assess_browser_candidates") as assess,
+        patch("app.operator_api.assess_job_candidates") as assess,
         patch("app.operator_api.Session") as session_factory,
     ):
         session_factory.return_value.__enter__.return_value.scalar.return_value = 1
@@ -102,6 +112,11 @@ def test_browser_agent_collects_and_imports_bounded_results(monkeypatch) -> None
     assert import_job.call_args.kwargs["search_role"] == "AI Engineer"
     assert import_job.call_args.args[1].work_mode == "hybrid"
     assert response.json()["diagnostics"][0]["outcome"] == "collected"
+    assert response.json()["diagnostics"][0]["access_reason"] == "page_ready"
+    assert response.json()["diagnostics"][0]["access_trace"] == [
+        "classify:ok:page_ready",
+        "proceed",
+    ]
     assess.assert_called_once()
 
 
@@ -432,3 +447,191 @@ def test_stale_cleanup_refuses_unconfirmed_apply() -> None:
         else:
             raise AssertionError("unconfirmed cleanup unexpectedly succeeded")
     session_factory.assert_not_called()
+
+
+def test_role_cleanup_previews_and_requires_explicit_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    preview = BrowserStaleCleanupResponse(
+        matched_count=3,
+        quarantined_count=0,
+        applied=False,
+    )
+    applied = BrowserStaleCleanupResponse(
+        matched_count=3,
+        quarantined_count=3,
+        applied=True,
+    )
+    with patch(
+        "app.operator_api.cleanup_role_mismatched_browser_jobs",
+        side_effect=[preview, applied],
+    ) as cleanup:
+        preview_response = _client().post(
+            "/operator/browser-agent/results/role-cleanup",
+            headers=_headers(),
+            json={"profile": "aslinur-default", "apply": False},
+        )
+        apply_response = _client().post(
+            "/operator/browser-agent/results/role-cleanup",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "apply": True,
+                "confirmed_cleanup": True,
+            },
+        )
+
+    assert preview_response.status_code == 200
+    assert preview_response.json()["matched_count"] == 3
+    assert apply_response.status_code == 200
+    assert apply_response.json()["quarantined_count"] == 3
+    assert cleanup.call_args_list[0].kwargs["apply"] is False
+    assert cleanup.call_args_list[1].kwargs["confirmed_cleanup"] is True
+
+
+def test_role_cleanup_only_quarantines_unassessed_role_noise() -> None:
+    mismatched = SimpleNamespace(
+        title="Satınalma Uzmanı",
+        status="needs_review",
+        activity_state="active",
+        activity_code="browser_agent_listing_confirmation",
+        updated_at=None,
+        evidence=[
+            {"kind": "browser_agent_import", "search_role": "AI Engineer"}
+        ],
+    )
+    matched = SimpleNamespace(
+        title="Yapay Zeka Mühendisi",
+        status="needs_review",
+        activity_state="active",
+        activity_code="browser_agent_listing_confirmation",
+        updated_at=None,
+        evidence=[
+            {"kind": "browser_agent_import", "search_role": "AI Engineer"}
+        ],
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = uuid4()
+    session.scalars.return_value.__iter__.return_value = iter(
+        [mismatched, matched]
+    )
+
+    with patch("app.operator_api.Session", return_value=session):
+        result = cleanup_role_mismatched_browser_jobs(
+            MagicMock(),
+            profile_label="aslinur-default",
+            limit=500,
+            apply=True,
+            confirmed_cleanup=True,
+        )
+
+    assert result.matched_count == 1
+    assert result.quarantined_count == 1
+    assert mismatched.status == "filtered_out"
+    assert mismatched.evidence[-1]["reason"] == "role_mismatch_unassessed"
+    assert matched.status == "needs_review"
+    session.delete.assert_not_called()
+    session.commit.assert_called_once()
+
+
+def test_job_role_catalog_is_authenticated_and_contains_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+
+    unauthorized = _client().get("/operator/job-roles")
+    response = _client().get("/operator/job-roles", headers=_headers())
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    catalog = {item["name"]: item["aliases"] for item in response.json()}
+    assert "CV Engineer" in catalog["Computer Vision Engineer"]
+    assert "K8s Engineer" in catalog["Kubernetes Engineer"]
+    assert "SAP Danışmanı" in catalog["SAP Consultant"]
+
+
+def test_assessment_backfill_requires_confirmation_and_queues_all_sources(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPERATOR_API_TOKEN", TOKEN)
+    candidate_ids = [uuid4(), uuid4()]
+    with (
+        patch(
+            "app.operator_api.load_assessable_candidate_ids",
+            return_value=candidate_ids,
+        ) as load,
+        patch("app.operator_api.assess_job_candidates") as assess,
+    ):
+        rejected = _client().post(
+            "/operator/job-assessments/backfill",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "limit": 25,
+                "confirmed_local_processing": False,
+            },
+        )
+        response = _client().post(
+            "/operator/job-assessments/backfill",
+            headers=_headers(),
+            json={
+                "profile": "aslinur-default",
+                "limit": 25,
+                "confirmed_local_processing": True,
+            },
+        )
+
+    assert rejected.status_code == 422
+    assert response.status_code == 202
+    assert response.json() == {"queued_count": 2}
+    assert load.call_args.kwargs["profile_label"] == "aslinur-default"
+    assert assess.call_args.kwargs["candidate_ids"] == candidate_ids
+
+
+def test_assessable_candidate_query_has_no_ingestion_source_filter() -> None:
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.scalar.return_value = SimpleNamespace(id=uuid4())
+    session.scalars.return_value.__iter__.return_value = iter([])
+
+    with patch("app.operator_api.Session", return_value=session):
+        assert load_assessable_candidate_ids(
+            MagicMock(),
+            profile_label="aslinur-default",
+            limit=25,
+        ) == []
+
+    statement = session.scalars.call_args.args[0]
+    sql = str(statement).casefold()
+    assert "job_candidate_assessments" in sql
+    assert "activity_code" not in sql
+    assert "length" in sql
+
+
+def test_completed_automatic_search_queues_its_persisted_candidates() -> None:
+    first_id = uuid4()
+    second_id = uuid4()
+    run = SimpleNamespace(
+        status="succeeded",
+        result={
+            "matched_candidates": [
+                {"candidate_id": str(first_id)},
+                {"candidate_id": "not-a-uuid"},
+                {"candidate_id": str(second_id)},
+            ]
+        },
+    )
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.execute.return_value.one_or_none.return_value = (
+        run,
+        "aslinur-default",
+    )
+
+    with (
+        patch("app.operator_api.Session", return_value=session),
+        patch("app.operator_api.assess_job_candidates", return_value=2) as assess,
+    ):
+        result = assess_profile_search_run_candidates(MagicMock(), uuid4())
+
+    assert result == 2
+    assert assess.call_args.kwargs["profile_label"] == "aslinur-default"
+    assert assess.call_args.kwargs["candidate_ids"] == [first_id, second_id]

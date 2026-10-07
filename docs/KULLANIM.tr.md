@@ -1,0 +1,810 @@
+# career-agent — Kullanım Kılavuzu (Türkçe)
+
+## Yerel operatör arayüzü
+
+Operatör API'si varsayılan olarak kapalıdır. En az 32 karakterlik rastgele bir
+anahtar üretip `.env` dosyasındaki `OPERATOR_API_TOKEN` alanına yazın. Anahtarı
+Git'e eklemeyin veya komut geçmişine açık metin olarak yapıştırmayın:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+Backend'i yalnızca loopback arayüzünde başlatın:
+
+```bash
+PYTHONPATH=backend python -m uvicorn app.main:app \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+İkinci terminalde React/TypeScript arayüzünü başlatın:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Arayüz `http://127.0.0.1:5173` adresindedir. Operatör anahtarı URL'ye,
+`localStorage` alanına veya repoya yazılmaz; yalnızca açık sekmenin belleğinde
+tutulur. `/operator` altındaki tüm endpoint'ler sabit zamanlı token kontrolüyle
+korunur. CORS yalnızca yerel Vite originlerine, gerekli `GET`/`POST`
+metotlarına ve sınırlı header kümesine izin verir. İlan onayı ayrıca ilanın
+tarayıcıda elle açılıp aktif olduğunun açıkça doğrulanmasını gerektirir.
+
+Sol menüdeki **Genel ilan arama** ekranı şirket veri tabanından ve doğrulanmış
+şirket sayısından bağımsız profil bazlı ilan keşfini arka planda başlatır.
+CV'den çıkarılan hedef roller varsayılan seçilir; operatör bu
+rolleri kaldırabilir veya çalışma özelinde yeni rol ekleyebilir. Seçim aday
+profilini değiştirmez. En fazla 10 rol ve üç konum kabul edilir. Konum
+girilmezse profil tercihleri kullanılır. Uzaktan, hibrit ve iş yerinde çalışma
+biçimleri; 7-90 günlük ilan yaşı; LinkedIn, Kariyer.net, Indeed, Glassdoor ve
+resmî ATS kaynakları ayrı ayrı seçilebilir. Tüm değerler sunucuda uzunluk,
+aralık ve allowlist kontrollerinden geçirilir. **Hızlı** tarama seçili
+rolleri tek Boolean grupta arar; **Derin** tarama rolleri en fazla üçlü gruplara
+böler. Seçilen her genel iş sitesi ayrı sorgulanır; resmî ATS seçeneği
+Greenhouse, Lever ve Ashby'yi tek grupta arar. Böylece
+LinkedIn'in sonuçları tek başına doldurması önlenirken sorgu başına en fazla 10
+sonuç korunur. Hızlı tarama en fazla 10, derin tarama en fazla 20 sorguyla
+sınırlıdır.
+
+Bir kaynağın kapsamlı sorguları hiç ham sonuç döndürmezse arama, kalan toplam
+sorgu kotası içinde önce tarih kısıtını, ardından gerekirse konum kısıtını
+gevşetir. Bu işlem yalnızca sıfır sonuç veren kaynaklarda yapılır; sonuç üretmiş
+bir kaynak yeniden sorgulanmaz ve toplam 10/20 sorgu sınırı aşılmaz. Sonuç
+ekranındaki kaynak kartları her sağlayıcı için kullanılan sorgu, fallback,
+ham sonuç, normalize edilen sonuç ve profile uyan aday sayılarını ayrı gösterir.
+Bu nedenle arama motorunun hiçbir URL döndürmesi ile bulunan ilanların profil
+filtresinde elenmesi birbirinden ayırt edilebilir.
+
+**Tarayıcıda kendin ara** seçeneği otomatik taramaya paralel, kotasız bir
+yardımcı akıştır. Seçilen tek rol için LinkedIn, Kariyer.net, Indeed,
+Glassdoor, Techcareer.net, Yenibiriş, SecretCV, Toptalent, We Work Remotely,
+Remote OK, Remotive ve Jobicy'nin kendi arama veya filtre sayfalarına güvenli
+bağlantılar hazırlar. Kullanıcı her bağlantıyı ayrı ve açık bir işlemle açar;
+uygulama oturum çerezi taşımaz, CAPTCHA atlatmaz ve sayfayı kazımaz. İstemci
+hedef URL gönderemez: şema, alan adı ve yol sunucudaki sabit allowlist'ten
+üretilip yeniden doğrulanır. Birleşik bir pazar sayfası olmayan resmî ATS
+kaynakları bu akışta bağlantı üretmez ve mevcut otomatik taramada kalır.
+
+**Yerel tarayıcı ajanı** seçili rol ve konum için görünür bir Chrome penceresi
+açar; seçilen LinkedIn, Kariyer.net, Indeed, Glassdoor, Techcareer.net,
+Yenibiriş, SecretCV, Toptalent ve remote iş kaynaklarının kendi arama
+sayfalarındaki kartları okur. Playwright tarayıcı ve sayfa araç katmanıdır;
+karar veren ajan, yerel Ollama'daki `qwen3:8b` modelidir. Model yalnızca
+sunucunun numaralandırdığı güvenli filtre kontrolleri üzerinde rol/konum
+doldurma, mevcut bir seçenek seçme, arama/filtremeyi tıklama veya bitirme
+araçlarından birini çağırabilir. Serbest CSS seçici, serbest URL, giriş,
+başvuru, CV yükleme, hesap, ödeme veya silme aracı verilmez. En fazla altı araç
+adımı sonunda kontrol deterministik toplayıcıya geri döner.
+
+Kaynak başına en fazla 10 benzersiz ilan mevcut inceleme kuyruğuna aktarılır.
+Her URL aynı katı alan adı ve ilan-yolu allowlist'i ile doğrulanır. Bir kaynak
+gerçek bir giriş duvarı gösterirse görünür pencere varsayılan olarak iki dakika
+açık tutulur. LinkedIn için doğrudan giriş ekranı açılır; kullanıcı bu sürede
+girişi kendisi tamamlarsa ajan aynı arama sayfasına geri döner. Tamamlanmazsa
+yalnızca o kaynak raporlanıp atlanır ve diğer kaynaklar çalışmaya devam eder.
+Sayfanın normal üst menüsündeki “Giriş yap” bağlantısı tek başına giriş duvarı
+sayılmaz. Kullanıcı adı, parola veya doğrulama kodu `.env` dosyasına konmaz;
+ajan hiçbir CAPTCHA ya da güvenlik kontrolünü atlatmaz. Ajan
+ayrı ve repoya alınmayan
+`.browser-agent-profile` dizinini kullanır; kişisel Chrome profilini doğrudan
+otomasyona vermez. Kurulumdan sonra sistemdeki Chrome'u kullanmak için ek bir
+Chromium indirmesi gerekmez:
+
+Toplanan kayıtlar profil puanlamasını beklemeden aynı paneldeki kalıcı
+**Toplanan ilanlar** listesinde gösterilir. Liste veritabanından okunur; sayfa
+yenileme veya backend yeniden başlatma sonucunda kaybolmaz. Ajan kayıtları ayrı
+bir aktivite koduyla işaretlenir, önceki manuel/ilk ajan kayıtları da geriye
+dönük görünür tutulur.
+
+Ajan ilan ayrıntı metnini aynı görünür tarayıcı oturumunda okur ve yalnızca
+yerel Ollama'ya gönderir. Qwen zorunlu/tercih edilen şartları, açık deneyim
+alt sınırını ve olası engelleri yapılandırılmış JSON olarak çıkarır; gizli
+düşünce zinciri kaydedilmez. Nihai 1–5 yıldız ve başvuru önerisi deterministik
+puan sınırlarıyla hesaplanır. Örneğin 0 yıl isteyen uygun bir junior ilan yüksek
+puan alabilirken 3+ yıl isteyen ilan, diğer beceriler uyuşsa bile deneyim açığı
+nedeniyle en fazla 44 puan alır. Profesyonel yıl ve staj ayı operatör ekranında
+ayrı tutulur; profil değiştiğinde önceki ajan değerlendirmeleri geçersizleşir ve
+metni bulunan en yeni ilanlar yeniden değerlendirilir.
+
+Yıldızlar ve 0–100 puan yalnızca CV–ilan uygunluğudur. Arayüzdeki “Analiz
+kanıtı” ayrı bir ölçüdür ve modelin ilan metninden çıkardığı bilginin ne kadar
+güvenilir olduğunu anlatır. Bu nedenle “0 uygunluk · yüksek analiz kanıtı”,
+olumlu bir sonuç değil, olumsuz kararın açık ilana dayandığı anlamına gelir.
+Toplanan ilanlar varsayılan olarak uygunluk puanına göre sıralanır; ayrıca analiz
+kanıtı veya toplama zamanı sıralaması seçilebilir.
+
+Toplanan ilan ekranında metin, kaynak, aramayı üreten rol, öneri ve başvuru
+durumu filtreleri bulunur. Karttan doğrudan “Başvurulacak” veya “Başvuruldu”
+işaretlenebilir. “Listeden gizle” ilanı ya da başvuru geçmişini silmez; yalnızca
+seçili profil için görünümü kapatır ve son işlem arayüzden geri alınabilir.
+Aranabilir rol seçenekleri CV profilindeki birincil, ikincil ve üçüncül rollerin
+yanında sık kullanılan teknoloji ve analist rollerini içerir; yine en fazla 10
+rol gerçekten taramaya gönderilir. Bu ortak katalog backend'deki
+`app.job_roles.ROLE_CATALOG` kaynağından API ile arayüze aktarılır; başlık
+eş anlamlıları ile ekrandaki rol listesi ayrı ayrı güncellenmez.
+
+Tarayıcı ajanı yalnızca operatörün ekrandaki açık onayından sonra başlatılır.
+“Yorumsuzları kaldır” işlemi önce etkilenecek kayıt sayısını gösterir ve ikinci
+bir onay ister. Açıklaması 100 karakterden kısa, hiçbir profil için Ollama
+değerlendirmesi ve başvuru kaydı olmayan kayıtlar, daha önce açılmış olsalar da,
+fiziksel olarak silinmez; `filtered_out` durumuna alınarak geçmiş korunur.
+İnceleme kuyruğu varsa kalıcı Ollama değerlendirmesini,
+yoksa deterministik puanı kullanır. Kapalı veya konum/politika dışı bir ilanı
+model puanı yeniden başvurulabilir hale getiremez.
+
+Ollama değerlendirmesi yalnızca görünür tarayıcı ajanından gelen ilanlarla
+sınırlı değildir. Otomatik genel arama tamamlandığında kaydettiği adaylar da
+aynı yerel değerlendirme katmanına gönderilir. **Eksik analizleri tamamla**
+işlemi ise kaynağa bakmadan açıklaması en az 100 karakter olan ve seçili profil
+için değerlendirmesi bulunmayan ilanları 25'lik, yeniden çalıştırılabilir
+partiler halinde işler. Aynı ilan içeriği ve profil özeti daha önce
+değerlendirildiyse hash denetimi gereksiz model çağrısını engeller.
+
+Tarayıcı ajanının rol, konum ve çalışma biçimi kapsamı birbirinden bağımsız ve
+açıkça seçilir. Kart başlığı seçilen rol veya dar eş anlamlı grubuyla uyuşmazsa
+kaydedilmez. Seçilmeyen çalışma biçimleri elenir; `remote` seçilmediğinde yalnız
+uzaktan ilan yayımlayan kaynaklar hiç açılmadan atlanır.
+**Rol dışındakileri kaldır** eski taramalardan kalmış, arandığı rollerin hiçbirine
+uymayan kayıtları önce sayar ve ikinci onaydan sonra karantinaya alır. Herhangi
+bir profilde Ollama değerlendirmesi veya başvuru geçmişi bulunan kayıt korunur.
+
+```dotenv
+LOCAL_JOB_AGENT_ENABLED=true
+OLLAMA_AGENT_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+BROWSER_AGENT_CHANNEL=chrome
+BROWSER_AGENT_PROFILE_DIR=.browser-agent-profile
+
+# Sitelerde ani ve tekrarlı yük oluşturmayan sabit beklemeler
+BROWSER_AGENT_PAGE_SETTLE_SECONDS=2
+BROWSER_AGENT_SOURCE_DELAY_SECONDS=8
+BROWSER_AGENT_DETAIL_DELAY_SECONDS=2
+
+# Giriş ekranı görülürse kullanıcıya tanınan süre ve tam tarama tekrar aralığı
+BROWSER_AGENT_LOGIN_WAIT_SECONDS=120
+BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS=300
+BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS=8
+BROWSER_AGENT_RUN_COOLDOWN_SECONDS=900
+BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS=21600
+
+# Serileştirilebilir LangGraph erişim pilotu (önce tek kaynak)
+BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS=indeed
+
+# Site tarafındaki engel kalkana kadar hiç açılmaması gereken kaynaklar
+BROWSER_AGENT_DISABLED_PROVIDERS=
+```
+
+`BROWSER_AGENT_ACCESS_GRAPH_PROVIDERS` erişim-durumu LangGraph pilotunu
+allowlist ile açar; varsayılan olarak yalnızca Indeed kullanır. Graph state'i
+yalnızca sağlayıcı, hedef URL, erişim sınıfı, sınırlı sayaçlar ve geçiş izini
+taşır. Canlı Playwright `page` nesnesi state'e/checkpoint'e yazılmaz. Bir insan
+doğrulaması ve hedefe en fazla bir geri dönüşten sonra güvenlik duvarı tekrar
+görülürse graph yeniden yükleme döngüsüne girmez, kaynağı erteler. Tanıyı
+kolaylaştırmak için yalnızca sabit tetikleyici kodu ve güvenli geçiş izi API'de
+gösterilir; sayfa metni, çerez veya kimlik bilgisi loglanmaz.
+Altı düğümlü akış `fetch_page → classify_access → (wait_for_human |
+retry_navigation | defer_source | proceed)` şeklindedir.
+
+Bu pilotta `interrupt()` bilinçli olarak kullanılmaz: mevcut HTTP isteği içinde
+canlı tarayıcı oturumunu açık tutan kalıcı bir worker/resume protokolü yoktur.
+Serileştirilmiş graph state'ini daha sonra yeniden açıp artık var olmayan bir
+`page` nesnesiyle devam ediyormuş gibi davranmak yerine bekleme düğümü aynı
+proses içinde ve süre sınırıyla çalışır.
+
+Beklemeler sabittir; tarayıcı parmak izi gizleme veya insan davranışı taklidi
+yapılmaz. Değerler backend tarafından sınırlandırılır ve geçersiz ayarda tarama
+kapalı biçimde durur. Aynı anda yalnızca bir görünür tarayıcı taraması çalışır.
+Tam tarama varsayılan ayarlarda birkaç dakika sürebilir. Oturum çerezleri yalnızca
+izinleri `0700` yapılan özel profil dizininde tutulur; bu dizin paylaşılmamalı veya
+repoya eklenmemelidir.
+
+HTTP 429, erişim reddi, olağandışı etkinlik veya güvenlik doğrulaması giriş
+isteğinden ayrı raporlanır. Böyle bir kaynak varsayılan olarak altı saat boyunca
+aynı backend sürecinde yeniden zorlanmaz; süre
+`BROWSER_AGENT_BLOCKED_SOURCE_COOLDOWN_SECONDS` ile değiştirilebilir. Backend
+yeniden başlatılırsa bu kaynak bazlı bellek sıfırlanır. Hesap kısıtlaması veya
+CAPTCHA görülürse süreyi beklemek ve kontrolü tarayıcıda elle tamamlamak gerekir.
+CAPTCHA/robot kontrolü ayrı bir insan doğrulaması olarak algılanır; ajan bu sayfayı
+yenilemeden en fazla `BROWSER_AGENT_HUMAN_CHECK_WAIT_SECONDS` kadar bekler. Kontrol
+tamamlandıktan sonra sayfanın oturması için bir kez
+`BROWSER_AGENT_HUMAN_CHECK_SETTLE_SECONDS` kadar daha bekler ve yalnızca arama
+sayfasına dönmek gerekirse tek bir gezinme yapar. Kontrol tamamlanmazsa kaynak
+beklemeye alınır; doğrulamayı otomatik aşmaya çalışmaz.
+
+Site tarafında uzun süreli engel görülen bir kaynak virgülle ayrılmış allowlist
+anahtarlarıyla tamamen durdurulabilir. Örneğin
+`BROWSER_AGENT_DISABLED_PROVIDERS=yenibiris` ayarı Yenibiriş'e hiçbir tarayıcı
+isteği göndermez. Bilinmeyen kaynak adı yapılandırma hatası olarak fail-closed
+biçimde reddedilir.
+
+Yerel ajan ulaşılamazsa tarama bütünüyle kaybolmaz: güvenli, kurallı toplayıcı
+çalışmaya devam eder ve arayüz o kaynak için yedek akış kullanıldığını gösterir.
+
+Kart ayrıştırıcısı kaynak sayfanın erişilebilirlik ve eylem metinlerini
+(`ile ilgili tüm ayrıntılar`, `Kolayca başvur` gibi) başlık, işveren veya konum
+olarak kaydetmez. Bilinen örnek/placeholder ilan kimlikleri içe alınmaz.
+**Bozukları ayıkla** işlemi daha önce kaydedilmiş kart metinlerini onarır ve
+geçersiz örnek bağlantıları silmek yerine denetlenebilir biçimde karantinaya
+alır.
+
+```bash
+python -m pip install -r backend/requirements.txt
+```
+
+Kaynak sitede bulunan bir ilan, aynı panelde bağlantı, başlık, şirket ve isteğe
+bağlı konum bilgileriyle inceleme kuyruğuna aktarılabilir. Aktarım yalnızca
+desteklenen 12 iş sitesi ile Greenhouse, Lever ve Ashby'nin ilan URL kalıplarını
+kabul eder; backend hedef sayfayı açmaz ve oturum bilgisi taşımaz. Operatörün
+ilanı tarayıcıda görünür gördüğünü ayrıca işaretlemesi gerekir. Aynı sağlayıcı ve
+ilan kimliği ikinci kez gönderilirse açık inceleme kaydı güncellenir; daha önce
+onaylanan, reddedilen veya elenen kayıtların kararı yeniden açılmaz.
+
+Günlük otomatik çalışma profil önbelleğine uyar. Operatörün açık onay verdiği
+manuel arama bu uzun önbelleği aşabilir; ancak aynı profil, rol, konum, çalışma
+biçimi, kaynak, tarih ve tarama modu kapsamı beş dakika içinde yeniden kota
+kullanamaz. Farklı bir arama kapsamı için
+de ardışık manuel istekler arasında en az 30 saniye bulunur ve aynı profil için
+yalnızca bir çalışma eşzamanlı yürütülür. Harici arama kotası kullanılmadan
+önce açık onay istenir. Aramada
+profile uyan fakat aktifliği henüz
+kanıtlanmamış en fazla 20 ilan, SSRF korumalı okuyucuyla ve en fazla dört
+eşzamanlı istekle ayrıca denetlenir. Denetim yalnızca seçili profile ait
+`needs_review`/`unknown` kayıtlarını günceller; onaylanmış, reddedilmiş veya
+başka profile ait kayıtları değiştirmez. Aynı profil için yalnızca bir çalışma
+`queued`/`running` durumunda olabilir. Çalışma durumu ile güvenli özet sayıları
+veritabanında saklanır; arayüz iki saniyede bir durumu yeniler ve tamamlanınca
+ilan kuyruğunu tekrar yükler. Panel taranan, profile uyan, aktif doğrulanan,
+kapalı elenen ve belirsiz kalan sonuç sayılarını ayrı gösterir. Backend çalışma
+sırasında kapanırsa yarım kalan
+kayıt bir sonraki başlatma denemesinde 30 dakika sonra güvenli biçimde
+`worker_interrupted` olarak sonlandırılır.
+
+Son aramadaki profile uyan kayıtlar **Genel ilan arama** sonuç alanında başlık,
+şirket, konum, kaynak, durum ve incelenme bilgisine göre filtrelenebilir. Ana
+sayfadaki **Eşleşmeleri gör** penceresi de aynı güvenli özetleri gösterir.
+Önceden reddedilmiş, kapalı, konum filtresinde
+elenmiş veya aktifliği kanıtlanamamış bir ilan bu ekranda nedeni ile görünür;
+ancak güvenli aktif ilan kuyruğuna eklenmez. Sonuç URL'leri API yanıtına
+alınmadan önce sağlayıcı allowlist'iyle yeniden doğrulanır ve arayüz dış
+metinleri React'in varsayılan escaping davranışıyla işler.
+
+İlan satırı veya son arama sonucundaki dış bağlantı ilk kez açıldığında aday
+kaydına `operator_viewed_at` yazılır. İlk görüntüleme zamanı sonraki açılışlarda
+değiştirilmez. Arayüz hiç açılmamış kayıtları **Yeni**, daha önce açılanları
+soluk **İncelendi** görünümüyle ayırır; görüntülemek ilanı onaylamaz veya
+reddetmez.
+
+İlan kartlarındaki **Başvurulacak** ve **Başvuruldu** işlemleri, adayın inceleme
+durumunu değiştirmeden profile özel bir başvuru kaydı oluşturur. Sol menüdeki
+**Başvurularım** görünümü bu kayıtları durumlarına göre filtreler; başvuru,
+mülakat, red, teklif ve vazgeçme geçişleri buradan yönetilir. Her durum değişimi
+ayrı bir geçmiş kaydıyla aynı transaction içinde saklanır. İlan daha sonra
+kapanır veya arama sonuçlarından düşerse başvuru kaydı silinmez. Yeni veritabanı
+tablolarını oluşturmak için güncellemeden sonra şu komutu çalıştırın:
+
+```bash
+PYTHONPATH=backend python -m alembic upgrade head
+```
+
+Sol menüdeki **Şirketler** görünümü kayıtları 25'erli sayfalar hâlinde,
+profil durumuna göre filtreleyerek ve şirket adıyla arayarak gösterir. Her
+şirketin ayrıntı penceresinde keşif kanıtları, tarama zamanları ve doğrulanmış
+harici bağlantılar incelenebilir. `candidate_found` ve `needs_review`
+profilleri, bağlantılar elle kontrol edildikten sonra açık onayla doğrulanabilir
+veya allowlist içindeki bir nedenle reddedilebilir. Red işlemi doğrulanmamış
+URL'leri temizleyerek profili inceleme kuyruğundan çıkarır; doğrulanmış profiller
+red işlemine karşı korunur. API sorgu uzunluğunu ve sayfalama sınırlarını
+doğrular; metin araması parametrik SQLAlchemy ifadesi kullanır. Harici
+bağlantılar SSRF/açık yönlendirme riskine karşı sunucuda yeniden doğrulanır ve
+geçersiz bağlantılar arayüze gönderilmez. Tüm inceleme endpoint'leri operatör
+anahtarı ister ve kararlar satır kilidi kullanılan transaction içinde yazılır.
+
+Doğrulanmamış bir şirketin ayrıntı penceresindeki **Şirket profilini ara**
+düğmesi yalnızca seçilen şirket için profil keşfi çalıştırır. İşlem harici arama
+kotasını kullanmadan önce açık onay ister, şirket başına aynı anda tek çalışmaya
+izin verir ve yeni bir aramayı beş dakika bekletir. Doğrulanmış profiller bu
+akıstan yeniden aranamaz. API ham arama sonuçlarını veya model çıktısını
+döndürmez; yalnızca sınırlı sonuç sayıları ve güvenli durum kodları arayüze
+aktarılır. Sonuç `candidate_found` veya `needs_review` ise bağlantılar yine insan
+onayı olmadan doğrulanmış sayılmaz.
+
+Şirketler ekranındaki **Tüm profilsiz şirketleri tara** işlemi sayfa sayfa elle
+ilerlemek yerine bütün profilsiz kayıtları kalıcı bir kuyruğa alır. Çalışma en
+fazla 2.200 harici sorguyla ve dört eşzamanlı şirketle sınırlıdır; her şirket
+için en fazla üç sorgu ayrılır. Arama sonucundaki alan adı ile şirket kimliği
+kesin eşleşiyorsa deterministik değerlendirme kullanılır, yalnızca belirsiz
+sonuçlar yapılandırılmış modele gönderilir. İlerleme ve sorgu tüketimi
+veritabanında tutulur; işlem arayüzden duraklatılıp sürdürülebilir. Backend
+kesilirse 15 dakika boyunca güncellenmeyen çalışma güvenli biçimde
+`worker_interrupted` durumuyla duraklatılır ve tamamlanan şirketler yeniden
+taranmadan kaldığı yerden sürdürülebilir. Bulunan profiller yine insan onayı
+bekler; toplu tarama hiçbir şirketi kendiliğinden doğrulamaz.
+
+Bu özelliği ilk kez kurarken yeni çalışma tablosunu oluşturun:
+
+```bash
+PYTHONPATH=backend python -m alembic upgrade head
+```
+
+Frontend tip kontrolü ve production build doğrulaması:
+
+```bash
+cd frontend
+npm run typecheck
+npm run build
+```
+
+## Testler
+
+Geliştirme bağımlılıklarını bir kez kurun ve testleri pytest ile çalıştırın:
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+python -m pytest
+```
+
+Mevcut `unittest.TestCase` testleri pytest tarafından doğrudan toplanır; yeni
+testler pytest işlevleri ve fixture'larıyla yazılabilir. `main` dalına yapılan
+her push ve her pull request, Python 3.14 test ve coverage raporuna ek olarak
+Node.js 24 üzerinde frontend tip kontrolü ve production build işlemini GitHub
+Actions içinde otomatik çalıştırır. Workflow herhangi bir API anahtarı veya
+veritabanı parolası kullanmaz.
+
+## Kariyer kaynaklarını keşfetme
+
+Önce `PYTHONPATH=backend python -m alembic upgrade head` komutunu çalıştırın.
+Doğrulanmış şirket profillerinden aday kariyer kaynaklarını incelemek için:
+
+```bash
+PYTHONPATH=backend python -m app.discover_career_sources --dry-run --limit 3
+PYTHONPATH=backend python -m app.discover_career_sources --limit 1
+```
+
+Belirli bir doğrulanmış şirketi tekrar taramak için `--company-id UUID` kullanın.
+Komut önce şirketin doğrulanmış ana sayfasını okur. Kaynak bulamazsa ayarlı
+`SERPER_API_KEY` ile iki sınırlı arama yapar. Aynı alan adındaki kariyer
+sayfaları aday kabul edilir. Dış ATS sonucu ise yalnızca pano anahtarı
+doğrulanmış şirket veya marka kimliğiyle eşleşiyorsa aday olur. Yeni kaynaklar
+`needs_review` durumunda kaydedilir; mevcut kayıtlar ve inceleme kararları
+değiştirilmez. `public_api` yalnızca ATS biçimini belirtir. Kaynak onaylanmadan
+otomatik ilan kontrolü yapılmamalıdır.
+
+Başarılı fakat sonuçsuz kaynak taramaları yedi gün, aday bulunan taramalar otuz
+gün sonra yeniden kontrol edilir. Geçici hatalar bir saatten başlayıp en fazla
+yirmi dört saate çıkan geri çekilme süresiyle tekrar denenir. Böylece toplu
+çalıştırmalar aynı şirketler için gereksiz arama kotası tüketmez.
+
+Şirket web profili değerlendirmesinde varsayılan sağlayıcı yerel Ollama'dır.
+Ollama yalnızca `http://127.0.0.1:11434` adresindeki `qwen3:8b` modeliyle
+çalışır; farklı ağ adresleri ve modeller reddedilir. `.env` yapılandırması:
+
+```dotenv
+EVALUATOR_PROVIDER=ollama
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Gemini'yi isteğe bağlı kullanmak için `EVALUATOR_PROVIDER=gemini` seçilir ve
+`GEMINI_API_KEY` tanımlanır. Model çıktısı sağlayıcıdan bağımsız olarak aynı
+Pydantic şeması, URL allowlist'i ve web doğrulamasından geçirilir. Yerel model
+tek başına bir şirket profilini doğrulanmış duruma getiremez.
+
+Şirket web profili keşfindeki geçici arama ve model hataları mevcut deneme
+kayıtlarından hesaplanan 1, 2, 4, 8, 16 ve en fazla 24 saatlik geri çekilme
+süresiyle yeniden denenir. Güvenlik doğrulamasından reddedilen çıktılar için
+bekleme süresi yedi gündür.
+
+Gemini istemcisindeki otomatik HTTP tekrarları kapalıdır. Toplu keşif komutu
+ilk kota sınırı, kimlik doğrulama veya model bulunamadı hatasında çalışmayı
+durdurur; iki ardışık bağlantı, zaman aşımı veya servis hatasında da devreyi
+açar. İşlenmeyen şirketler değiştirilmez. Kota sınırı altı saat, yapılandırma
+hataları yedi gün sonra yeniden seçilebilir. Sağlayıcının ham hata metni ve
+anahtarlar günlük çıktısına yazılmaz.
+
+## Kaynak onayı ve ilan senkronizasyonu
+
+Bir kaynağın kanıtını veritabanından kontrol ettikten sonra kaynağı açıkça
+onaylayın veya reddedin:
+
+```bash
+PYTHONPATH=backend python -m app.review_career_source --source-id UUID --approve
+PYTHONPATH=backend python -m app.review_career_source --source-id UUID --reject
+```
+
+Yalnızca doğrulanmış şirkete bağlı, `active` durumundaki Greenhouse, Lever ve
+Ashby kaynakları okunur. Önce seçimi görün, ardından ilanları eşitleyin:
+
+```bash
+PYTHONPATH=backend python -m app.ingest_jobs --dry-run --limit 3
+PYTHONPATH=backend python -m app.ingest_jobs --limit 3 --delay-seconds 3
+```
+
+Başarılı tam okumada yeni ilanlar eklenir, değişenler güncellenir ve artık
+kaynakta görünmeyenler `closed` yapılır. Hatalar artan bekleme süresiyle yeniden
+denenir; beş ardışık hatada kaynak tekrar incelemeye alınır.
+
+## Üçüncü taraf ilan platformları
+
+LinkedIn, Kariyer.net, Indeed ve Glassdoor sonuçları resmî şirket kariyer
+kaynaklarından ayrı tutulur. Serper'ın herkese açık arama sonuçlarındaki izin
+verilen ilan URL biçimleri normalize edilir. Kariyer.net sonuçlarında herkese
+açık ilan sayfası, SSRF korumalı ve boyutu sınırlı istemciyle yalnızca açık
+kapanma mesajı için okunur. Kapanma mesajı doğrulanan kayıt `rejected`, belirsiz
+veya okunamayan kayıt `needs_review` durumunda yazılır. Mesajın bulunmaması
+ilanın aktif olduğu anlamına gelmez. Sistem giriş/CAPTCHA kontrollerini aşmaz.
+Bu kayıtlar onaylanmadan `job_postings` tablosuna veya başvuru akışına girmez.
+
+Doğrulanmış şirket profillerindeki resmî LinkedIn adreslerinden, LinkedIn'e
+otomatik istek göndermeden şirketin güncel ilan sekmesine giden güvenli
+bağlantıları listelemek için:
+
+```bash
+PYTHONPATH=backend python -m app.review_company_profile --limit 25
+```
+
+Komut `candidate_found` ve `needs_review` şirket profillerini salt okunur
+biçimde listeler. Resmî siteyi, şirket unvanını ve varsa LinkedIn profilini
+tarayıcıda elle doğruladıktan sonra profili onaylamak için:
+
+```bash
+PYTHONPATH=backend python -m app.review_company_profile \
+  --company-id UUID \
+  --approve \
+  --confirmed-identity
+```
+
+URL'ler onay sırasında tekrar allowlist ve genel ağ kontrollerinden geçirilir.
+Onay açık kimlik doğrulaması olmadan yapılmaz, karar kanıta eklenir ve mevcut
+doğrulanmış profil yanlışlıkla reddedilemez.
+
+Doğrulanmış profillerin ilan bağlantılarını üretmek için:
+
+```bash
+PYTHONPATH=backend python -m app.list_company_job_pages \
+  --missing-careers-only \
+  --limit 100
+```
+
+Komut yalnızca `https` LinkedIn şirket URL'lerini kabul eder; kişi profili,
+taklit alan adı ve geçersiz şirket slug'larını eler. Çıktı elle açılacak bir
+`linkedin_jobs_url` üretir. Oturum çerezi kullanmaz, LinkedIn'i taramaz ve
+ilanı aktif kabul etmez. Seçilen ilan yine mevcut doğrulama ve insan onayı
+kapılarından geçirilmelidir.
+
+Şirketin LinkedIn ilan sekmesinde açık olduğunu elle gördüğünüz belirli bir
+ilanı mevcut inceleme kuyruğuna eklemek için:
+
+```bash
+PYTHONPATH=backend python -m app.import_company_job \
+  --company-id UUID \
+  --listing-url "https://www.linkedin.com/jobs/view/NUMERIC_ID" \
+  --title "Python Developer" \
+  --location "İstanbul, Türkiye" \
+  --work-mode hybrid \
+  --employment-type full_time \
+  --confirmed-active
+```
+
+Yalnızca doğrulanmış ve geçerli bir LinkedIn şirket profiline bağlı şirketler
+kabul edilir. İlan URL'si kanonik biçime getirilir, izleme parametreleri atılır
+ve kayıt doğrudan onaylanmak yerine `needs_review` kuyruğuna girer. Daha önce
+reddedilmiş ya da onaylanmış terminal kayıtlar yeniden açılmaz.
+
+Arama başlığı ve özetinde açıkça görülen konum, çalışma biçimi, istihdam türü,
+göreli yayın tarihi ve aktif/kapalı işaretleri aday kaydına eklenir. Eksik bilgi
+tahmin edilmez; `unknown` veya `null` olarak kalır. Bir arama özeti aktiflik
+işareti taşısa bile ilan otomatik onaylanmaz. Açık kapanma işareti ise adayın
+yanlışlıkla başvuru kuyruğuna girmemesi için otomatik ret sebebidir.
+Kariyer.net ilanı aynı platformdaki farklı bir ilan kimliğine yönlenirse özgün
+ilan artık erişilebilir kabul edilmez ve aday kapalı olarak işaretlenir. Giriş,
+ana sayfa veya biçimi tanınmayan yönlendirmeler ise yanlış ret üretmemek için
+`unknown` kalır.
+
+İlk aşamada kota kullanımını ve yanlış şirket eşleşmesini sınırlamak için arama
+tek bir açık şirket kimliğiyle çalışır:
+
+```bash
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --company-id UUID \
+  --dry-run
+
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --company-id UUID \
+  --max-results 10
+```
+
+Şirket profili web içeriğiyle doğrulanmış ve bir marka adı kaydedilmişse arama
+ticari unvan yerine bu marka adıyla yapılır. Doğrulanmamış profillerde CSV'den
+gelen şirket adı korunur.
+
+URL alan adları ve ilan yolu allowlist ile doğrulanır; takip parametreleri
+atılır ve aynı platformdaki aynı ilan tekrar eklenmez. Arama başlığı ve özeti
+güvenilmeyen dış veri kabul edilir. Adayın mevcut şirket kaydı değişmişse işlem
+transaction içinde durdurulur. Şirket birleştirmelerinde aday kayıtlarının yeni
+şirket kimliğine taşınması zorunludur.
+
+### İlan adayını inceleme
+
+Önce `needs_review` kaydının URL'sini tarayıcıda elle açın ve ilanın doğru
+şirkete ait, erişilebilir ve hâlâ aktif olduğunu kontrol edin. Aktifliği
+doğrulanan aday tek transaction içinde onaylanır ve `job_postings` tablosuna
+aktarılır:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --approve \
+  --confirmed-active
+```
+
+Yanlış şirkete ait, kapanmış veya şüpheli adaylar reddedilir:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --reject
+```
+
+Onay sırasında URL tekrar allowlist ve kanıt doğrulamasından geçirilir. Bir
+adayın tam olarak bir `job_postings` kaydı olabilir. ATS ilanları
+`career_source_id`, üçüncü taraf platform ilanları `job_board_candidate_id`
+üzerinden bağlanır; veritabanı ikisinin aynı anda dolu veya boş olmasını
+engeller. Daha önce onaylanmış aday basit bir ret işlemiyle silinmez ya da
+kapatılmaz. Sonraki aramalar onaylanmış veya reddedilmiş kaydın incelenen URL,
+başlık ve özetini değiştiremez; yalnızca son görülme zamanını yeniler.
+
+Doğrulanmış şirketleri tek tek UUID ile çağırmak yerine, süresi gelen şirketleri
+toplu tarayın:
+
+```bash
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --dry-run \
+  --limit 10
+
+PYTHONPATH=backend python -m app.discover_job_board_jobs \
+  --limit 10 \
+  --max-results 10 \
+  --delay-seconds 3
+```
+
+Aday bulunan şirketler bir gün, sonuç bulunmayanlar yedi gün sonra tekrar
+taranır. Sağlayıcı hataları sınırlı geri çekilme süresiyle kaydedilir; kota veya
+kimlik doğrulama hatasında batch işlemi hemen durur. Böylece aynı şirket için
+gereksiz Serper sorguları yapılmaz.
+
+Arama sonucu yalnızca izin verilen ilan URL'sine sahip olduğu için kabul
+edilmez; başlık, özet veya URL içinde doğrulanmış şirket kimliği de aranır.
+`Inmanage` ve `4ARC` gibi tek kelimelik veya kısa markalarda arama ticari
+kimlikle yapılır. Eski kayıtları bu kurala göre önce değişiklik yapmadan
+denetleyin, ardından yalnızca eşleşmeyenleri `filtered_out` durumuna taşıyın:
+
+```bash
+PYTHONPATH=backend python -m app.audit_job_board_candidates
+PYTHONPATH=backend python -m app.audit_job_board_candidates --apply
+```
+
+Denetim hiçbir kaydı silmez. `--apply` verilmediğinde transaction içinde durum
+değişikliği yapılmaz. `filtered_out` kayıtları onay kuyruğuna veya ilan
+eşleştirmesine girmez; denetim kanıtı kayıt üzerinde korunur.
+
+Bekleyen adayları özel aday profiline göre puanlanmış biçimde listelemek için:
+
+```bash
+PYTHONPATH=backend python -m app.audit_job_board_activity \
+  --limit 100 \
+  --apply
+
+PYTHONPATH=backend python -m app.review_job_board_queue \
+  --profile aslinur-default \
+  --minimum-score 35 \
+  --limit 100
+```
+
+İlk komut bekleyen ilanları en fazla dört eşzamanlı, SSRF korumalı istekle
+denetler; başlık ve özetten konumu yeniden çıkarır, açık kapanış sinyali bulunan
+ilanı `rejected` yapar ve açık başvuru sinyali bulunan ilanı `active` olarak
+işaretler. Sayfadaki sınırlı JSON-LD `JobPosting.validThrough` alanı da
+doğrulanır: geçmiş tarih kapanış, makul bir gelecek tarih aktiflik kanıtıdır;
+bozuk, çelişkili veya aşırı ileri tarihler güvenilmez kabul edilir. Arama
+özetindeki tarih ya da “aktif işe alım” ifadesi tek başına aktiflik kanıtı
+sayılmaz. İşlem hiçbir kaydı silmez ve sonucu kanıta ekler. İkinci komut
+varsayılan olarak yalnızca aktifliği doğrulanmış ilanları gösterir; erişimi
+engellenen veya aktifliği belirsiz kayıtlar normal başvuru kuyruğuna girmez.
+Tanılama gerektiğinde `--include-unverified` ile ayrıca görülebilirler.
+Kuyruk komutu kayıtları değiştirmez. Aktif ilan yine
+`review_job_board_candidate --approve --confirmed-active` komutuyla insan
+onayından geçirilir.
+
+### Profil bazlı genel ilan keşfi
+
+Şirket listesinde bulunmayan işverenlerin ilanlarını da hedef rol, konum ve
+uzaktan çalışma tercihleriyle aramak için önce maliyetsiz sorgu planını görün:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --dry-run
+```
+
+Aramayı çalıştırmak için:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --max-queries 6 \
+  --max-results 10 \
+  --minimum-score 20
+```
+
+Komut önce birincil, ikincil ve üçüncül rolleri Greenhouse, Lever ve Ashby'nin
+resmî ilan sayfalarında; ardından ikincil kaynak olan LinkedIn, Kariyer.net,
+Indeed ve Glassdoor'da arar. Her iki kaynak grubu profilin yerinde/hibrit ve
+uzaktan çalışma coğrafyasıyla daraltılır. ATS URL keşfinde tarih operatörü
+kullanılmaz; bulunan ATS ilanının güncelliği, konumu ve çalışma biçimi
+filtrelemeden önce sağlayıcının canlı public API verisinden alınır. Aynı ilan
+kimliği API listesinde hâlâ
+bulunuyorsa `active`, listeden kaldırılmışsa kapalı kabul edilir. LinkedIn ve
+diğer ikincil kaynaklar bu aşamada sayfa isteğiyle otomatik doğrulanmaz.
+Profildeki rol adları sorguya önce değişmeden eklenir; kalan güvenli sorgu
+uzunluğu içinde Yapay Zeka Mühendisi, Python Geliştirici, Yazılım Mühendisi ve
+Mobil Geliştirici gibi Türkçe unvanlar da aranır. Böylece profil dosyasında aynı
+rolün iki dilde tekrar tutulması gerekmez. Arama motorunun alan adı filtresini
+korumak için oluşturulan sorgular ayrıca 400 karakterle sınırlandırılır.
+Komutun `query_stats` çıktısı her sorgunun normalize edilen sağlayıcı ve
+aktiflik sayılarını gösterir; bunlar ham arama sonuçlarıdır ve aday kabul
+edildikleri anlamına gelmez. `accepted_count`, `activity_code_counts` ve
+`exclusion_counts` alanları kayıt kapısının sonucunu açıklar. Kapalı ilanlar,
+zorunlu konum filtresinde konumu bilinmeyen ilanlar ve tercih edilen uzaktan
+çalışma coğrafyası dışında kalan ilanlar kaydedilmez. `Worldwide` gibi global
+uzaktan çalışma kapsamları ancak profilin `preferred_remote_locations`
+alanında açıkça listelenirse kabul edilir. Desteklenen URL'leri normalize eder,
+yinelenen ilanları tekilleştirir ve rol eşleşmesi olmayan sonuçları kaydetmeden eler.
+`matched_candidate_count` aramada profile uyan sonuç sayısını,
+`candidate_count` ise gerçekten yeni veya bekleyen kaydı yenileyen aday
+sayısını gösterir. Daha önce onaylanmış, reddedilmiş ya da filtrelenmiş terminal
+kayıtlar yeniden açılmaz ve `suppressed_candidates` altında ayrıca sayılır.
+Varsayılan olarak en fazla altı Serper sorgusu yapar. Aday
+bulunan profil 12 saat, sonuç bulunmayan profil 24 saat boyunca
+cache'ten çalışır; profil değişirse beklemeden yeniden taranabilir. `--force`
+yalnızca bilinçli bir erken yeniden tarama gerektiğinde kullanılmalıdır.
+Arama motorundaki resmî ATS ilanı kapanmış olsa bile pano kimliği güvenli
+biçimde çıkarılır. Sistem aynı Greenhouse, Lever veya Ashby panosunun public
+API listesini pano başına en fazla 200 ilanla açar; yalnızca aynı doğrulanmış
+pano URL'sine ait canlı ilanları aday havuzuna ekler. Sorgu başına genişletilen
+ilan sayısı ayrıca 500 ile sınırlandırılır. Böylece eski indeks kaydı başvuru
+adayı olmaz, yalnızca güncel pano keşfi için kullanılır.
+Greenhouse panosunun açıklamalarla birlikte yanıtı güvenli boyut sınırını
+aşarsa aynı public API yalnızca başlık, konum ve ilan URL'si metadatasıyla bir
+kez daha okunur. Yanıt sınırı yükseltilmez; boyut dışındaki hatalarda tekrar
+isteği yapılmaz.
+Önceki taramalarda birikmiş kapalı veya konum politikasına uymayan profil
+adaylarını yeni Serper sorgusu harcamadan yeniden değerlendirmek için:
+
+```bash
+PYTHONPATH=backend python -m app.discover_profile_jobs \
+  --profile aslinur-default \
+  --reconcile-only
+```
+
+Genel aramada şirket adı güvenilir biçimde çıkarılamazsa aday yine manuel
+incelemeye bırakılır. İlan tarayıcıda açılıp aktifliği ve işvereni doğrulandıktan
+sonra şirket adı açıkça verilerek onaylanabilir:
+
+```bash
+PYTHONPATH=backend python -m app.review_job_board_candidate \
+  --candidate-id UUID \
+  --approve \
+  --confirmed-active \
+  --company-name "Doğrulanmış İşveren"
+```
+
+Bu sırada mevcut şirket kaydı yeniden kullanılır; yoksa `needs_review` işaretli
+bir şirket kaydı oluşturulur. Ücretli model çağrısı yapılmaz ve ilan insan
+onayı olmadan `job_postings` tablosuna geçirilmez.
+
+## Aday profili ve ilan eşleştirme
+
+Eşleştirme ilk aşamada harici model veya ücretli API çağırmaz. Hedef rol,
+beceri, konum, çalışma biçimi, ilan yaşı, kıdem, deneyim şartı ve hariç tutulan terimleri
+kullanarak etkin ilanlara açıklanabilir bir 0-100 puan verir. Sonuçlar
+`job_matches` tablosunda `strong_apply`, `apply`, `review` veya `skip` olarak
+saklanır.
+
+Rol önceliği üç seviyelidir: `target_roles` ana hedefleri,
+`secondary_roles` güçlü alternatifleri, `tertiary_roles` ise yalnızca haberdar
+olunmak istenen düşük öncelikli alanları temsil eder. Üçüncül rol başlıkta
+eşleştiğinde ilan en fazla manuel inceleme seviyesine taşınır; tek başına güçlü
+başvuru önerisi üretmez.
+
+Profilde `preferred_locations` yerinde/hibrit şehirleri,
+`preferred_remote_locations` ise uzaktan çalışılabilecek ülke veya bölgeleri
+belirler. `excluded_locations` açık ret kurallarını, `allowed_work_modes` ise
+`remote`, `hybrid` ve `onsite` seçeneklerini belirler.
+`location_filter_mode` değeri `prefer` olduğunda konum yalnızca puanı etkiler;
+`require` olduğunda bilinen ve tercih dışı konumlar elenir. Konumu bilinmeyen
+ilanlar sessizce elenmez, `location_unknown` riskiyle manuel incelemeye kalır.
+Uzaktan çalışma biçimi coğrafi uygunluk anlamına gelmez. Örnek profilde
+`preferred_remote_locations` değeri `Türkiye` ve `Turkey` olduğu için Türkiye
+genelindeki remote ilanlar kabul edilir; ABD, APAC, Orta Doğu veya Azerbaycan
+gibi farklı kapsamlar `require` modunda elenir. `Worldwide`, `International`,
+`Anywhere` veya `Global` açıkça yazıyorsa Türkiye'den çalışmaya uygun kabul
+edilir. Ülke kapsamı bilinmeyen remote kayıtlar `remote_location_unknown`
+uyarısıyla saklanır fakat normal başvuru kuyruğuna girmez.
+`max_listing_age_days` sınırından eski olduğu açıkça bilinen ilanlar `skip`
+olur; yayın tarihi bilinmeyenler `published_date_unknown` olarak işaretlenir.
+Örnek profil yalnızca İstanbul ve Kocaeli'deki yerinde/hibrit ilanları veya
+konumdan bağımsız uzaktan ilanları kabul edecek şekilde düzenlenebilir.
+
+Örnek profili özel alana kopyalayıp düzenleyin; `private/` Git tarafından
+yok sayılır:
+
+```bash
+cp config/candidate_profile.example.json private/candidate_profile.json
+
+PYTHONPATH=backend python -m alembic upgrade head
+
+PYTHONPATH=backend python -m app.configure_candidate_profile \
+  --file private/candidate_profile.json
+```
+
+Önce yeniden puanlanması gereken ilanları görün, sonra eşleştirmeyi çalıştırın:
+
+```bash
+PYTHONPATH=backend python -m app.match_jobs \
+  --profile aslinur-default \
+  --dry-run \
+  --limit 100
+
+PYTHONPATH=backend python -m app.match_jobs \
+  --profile aslinur-default \
+  --limit 100
+```
+
+İlan içeriği, profil veya eşleştirici sürümü değişmedikçe kayıt tekrar
+hesaplanmaz. `--refresh` bütün etkin ilanları yeniden puanlar. Yeniden puanlama
+`shortlisted`, `dismissed` ve `applied` gibi insan inceleme kararlarını
+değiştirmez. Bu puan bir başvuru kararı değildir; sonraki yerel model aşamasına
+gidecek küçük aday kümesini maliyetsiz biçimde daraltır.
+
+## CV'den yerel profil taslağı
+
+PDF ve DOCX CV dosyaları yalnızca yerel makinede işlenir. Dosya uzantısı tek
+başına yeterli kabul edilmez; imza, boyut, PDF sayfa sınırı ve DOCX arşiv yapısı
+doğrulanır. Şifreli veya aktif davranış içeren PDF'ler ile şüpheli, aşırı
+sıkıştırılmış ya da yol geçişi içeren DOCX arşivleri reddedilir. CV dosyasının
+kendisi veritabanına veya repoya kopyalanmaz.
+
+Önce yalnızca taslağı görüntüleyin:
+
+```bash
+PYTHONPATH=backend python -m app.import_candidate_cv \
+  --file private/cv.pdf \
+  --profile-file private/candidate_profile.json
+```
+
+Metin yerel Ollama'ya gönderilmeden önce e-posta, telefon, URL ve olası kimlik
+numaraları temizlenir. CV içeriği güvenilmeyen veri kabul edilir. Yerel modelin
+çıkardığı her rol, beceri, eğitim, dil ve deneyim değeri CV metninden birebir
+kanıt göstermek zorundadır; kanıtsız çıktı tümüyle reddedilir.
+
+Taslak incelendikten sonra özel profil dosyasına açıkça uygulamak için:
+
+```bash
+PYTHONPATH=backend python -m app.import_candidate_cv \
+  --file private/cv.pdf \
+  --profile-file private/candidate_profile.json \
+  --apply
+
+PYTHONPATH=backend python -m app.configure_candidate_profile \
+  --file private/candidate_profile.json
+```
+
+`--apply` mevcut hedef, ikincil ve üçüncül rolleri, konumları, hariç tutulan terimleri
+veya çalışma biçimi tercihlerini değiştirmez. CV'deki roller geçmiş deneyimi
+gösterebilir; iş tercihi sayılmaz ve yalnızca önizlemede gösterilir. Yalnızca
+kanıtlanan ve normalize edilen somut beceriler eklenir; işlemden önce
+`candidate_profile.before_cv_import.json` yedeği oluşturulur. Veritabanı ikinci
+komut çalıştırılana kadar güncellenmez.

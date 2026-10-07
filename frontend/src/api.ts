@@ -304,6 +304,8 @@ export type BrowserSourceDiagnostic = {
   error_code: string | null;
   agent_used: boolean;
   agent_action_count: number;
+  access_reason: string | null;
+  access_trace: string[];
 };
 
 export type BrowserCollectResponse = {

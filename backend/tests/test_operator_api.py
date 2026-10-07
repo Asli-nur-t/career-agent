@@ -603,6 +603,9 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
         ) as queue,
         patch("app.operator_api.load_latest_profile_search", return_value=run),
         patch("app.operator_api.execute_profile_search_run") as execute,
+        patch(
+            "app.operator_api.assess_profile_search_run_candidates"
+        ) as assess,
     ):
         response = _client().post(
             "/operator/search-runs",
@@ -634,6 +637,8 @@ def test_operator_can_queue_bounded_profile_search(monkeypatch) -> None:
     assert queue.call_args.kwargs["force"] is False
     assert execute.call_args.args[1] == run_id
     execute.assert_called_once()
+    assert assess.call_args.args[1] == run_id
+    assess.assert_called_once()
 
 
 def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
@@ -653,6 +658,9 @@ def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
         patch("app.operator_api.queue_profile_search", return_value=run_id) as queue,
         patch("app.operator_api.load_latest_profile_search", return_value=run),
         patch("app.operator_api.execute_profile_search_run") as execute,
+        patch(
+            "app.operator_api.assess_profile_search_run_candidates"
+        ) as assess,
     ):
         response = _client().post(
             "/operator/search-runs",
@@ -678,6 +686,8 @@ def test_operator_can_force_deep_profile_search(monkeypatch) -> None:
     assert queue.call_args.kwargs["max_listing_age_days"] == 14
     assert queue.call_args.kwargs["force"] is True
     assert execute.call_args.kwargs["force"] is True
+    assert assess.call_args.args[1] == run_id
+    assess.assert_called_once()
 
 
 def test_operator_returns_retry_after_for_same_search_cooldown(monkeypatch) -> None:
