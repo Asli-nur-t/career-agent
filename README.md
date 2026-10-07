@@ -34,6 +34,12 @@ control of every decision. Nothing is applied to automatically.
 - **Operator UI (React + TypeScript).** Review queue, company browser, application
   tracker with status history.
 
+## Screenshots
+
+![Review queue](docs/images/review-queue.png)
+![Company profiles](docs/images/companies.png)
+![Application tracker](docs/images/applications.png)
+
 ## Architecture
 
 ```mermaid
